@@ -15,6 +15,7 @@
 [![i18n](https://img.shields.io/badge/i18n-ES%20%7C%20EN%20%7C%20FR%20%7C%20DE-success)](#-internationalization-i18n)
 [![Release](https://github.com/alexwing/Taurimule/actions/workflows/release.yml/badge.svg)](https://github.com/alexwing/Taurimule/actions/workflows/release.yml)
 
+[📖 User Manual (English)](MANUAL.md) • [📖 Manual de Usuario (Español)](MANUAL_ES.md)  
 [Aviso Legal en Español](#-aviso-legal-y-descargo-de-responsabilidad) • [Legal Disclaimer in English](#-legal-disclaimer--terms-of-use) • [Features](#-key-features) • [Architecture](#-architecture) • [Getting Started](#-getting-started)
 
 </div>
