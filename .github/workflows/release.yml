@@ -1,0 +1,160 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release tag (e.g. v0.1.0). Leave blank to use version from package.json.'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows (Installer & Standalone)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Windows Application with Tauri
+        run: npx tauri build
+
+      - name: Prepare Windows Release Artifacts
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          New-Item -ItemType Directory -Force -Path windows-dist
+
+          # Locate primary executable
+          $mainExe = Get-ChildItem -Path "src-tauri/target/release" -Filter "*.exe" -File | Where-Object { $_.Name -like "taurimule*.exe" -or $_.Name -like "TauriMule*.exe" } | Select-Object -First 1
+
+          # 1. Standalone / Portable executable
+          if ($mainExe) {
+            Copy-Item $mainExe.FullName "windows-dist/TauriMule-v$version-Standalone.exe" -Force
+            Write-Host "Prepared Standalone: windows-dist/TauriMule-v$version-Standalone.exe"
+          } else {
+            Write-Error "Main executable not found in src-tauri/target/release"
+          }
+
+          # 2. Portable ZIP bundle (includes TauriMule executable + amuled sidecar binary)
+          $sidecar = Get-ChildItem -Path "src-tauri/binaries" -Filter "*amuled*" -File | Select-Object -First 1
+          if ($mainExe -and $sidecar) {
+            $portableDir = "windows-dist/TauriMule-v$version-Portable"
+            New-Item -ItemType Directory -Force -Path $portableDir
+            Copy-Item $mainExe.FullName "$portableDir/TauriMule.exe" -Force
+            Copy-Item $sidecar.FullName "$portableDir/$($sidecar.Name)" -Force
+            Compress-Archive -Path "$portableDir/*" -DestinationPath "windows-dist/TauriMule-v$version-Portable.zip" -Force
+            Remove-Item -Recurse -Force $portableDir
+            Write-Host "Prepared Portable ZIP: windows-dist/TauriMule-v$version-Portable.zip"
+          }
+
+          # 3. NSIS Setup Installer
+          $nsisSetup = Get-ChildItem -Path "src-tauri/target/release/bundle/nsis/*-setup.exe" | Select-Object -First 1
+          if ($nsisSetup) {
+            Copy-Item $nsisSetup.FullName "windows-dist/TauriMule-v$version-Setup.exe" -Force
+            Write-Host "Prepared NSIS: windows-dist/TauriMule-v$version-Setup.exe"
+          } else {
+            Write-Warning "NSIS setup executable not found"
+          }
+
+          # 4. MSI Installer
+          $msiInstaller = Get-ChildItem -Path "src-tauri/target/release/bundle/msi/*.msi" | Select-Object -First 1
+          if ($msiInstaller) {
+            Copy-Item $msiInstaller.FullName "windows-dist/TauriMule-v$version.msi" -Force
+            Write-Host "Prepared MSI: windows-dist/TauriMule-v$version.msi"
+          }
+
+      - name: Upload Windows Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release-assets
+          path: windows-dist/*
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Determine Release Tag and Title
+        id: release_info
+        shell: bash
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.tag_name }}" ]; then
+            TAG="${{ inputs.tag_name }}"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="v${VERSION}"
+          fi
+          echo "tag_name=${TAG}" >> $GITHUB_OUTPUT
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "title=TauriMule ${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Download Windows Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-release-assets
+          path: release-assets
+
+      - name: Inspect Release Assets
+        shell: bash
+        run: |
+          echo "Release assets ready for publication:"
+          ls -lah release-assets/
+
+      - name: Publish Release to GitHub
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_info.outputs.tag_name }}
+          name: ${{ steps.release_info.outputs.title }}
+          body: |
+            ## TauriMule ${{ steps.release_info.outputs.tag_name }}
+
+            Modern, ultra-fast ED2K/Kad GUI desktop client powered by Tauri v2 and unmodified amuled core daemon.
+
+            ### 📦 Descargas disponibles / Available Downloads:
+            - 🪟 **Windows (Instalador Setup NSIS)**: `TauriMule-v${{ steps.release_info.outputs.version }}-Setup.exe`
+            - 🪟 **Windows (Portable ZIP - No requiere instalación)**: `TauriMule-v${{ steps.release_info.outputs.version }}-Portable.zip`
+            - 🪟 **Windows (Instalador MSI)**: `TauriMule-v${{ steps.release_info.outputs.version }}.msi`
+            - 🪟 **Windows (Ejecutable suelto / Standalone)**: `TauriMule-v${{ steps.release_info.outputs.version }}-Standalone.exe`
+
+            ---
+            *Consulte [DISCLAIMER.md](https://github.com/alexwing/Taurimule/blob/main/DISCLAIMER.md) y [LICENSE](https://github.com/alexwing/Taurimule/blob/main/LICENSE) para términos legales y de licencia.*
+          files: release-assets/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

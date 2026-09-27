@@ -13,6 +13,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Vite](https://img.shields.io/badge/Vite-8.0-646CFF?logo=vite&logoColor=white)](https://vitejs.dev/)
 [![i18n](https://img.shields.io/badge/i18n-ES%20%7C%20EN%20%7C%20FR%20%7C%20DE-success)](#-internationalization-i18n)
+[![Release](https://github.com/alexwing/Taurimule/actions/workflows/release.yml/badge.svg)](https://github.com/alexwing/Taurimule/actions/workflows/release.yml)
 
 [Aviso Legal en Español](#-aviso-legal-y-descargo-de-responsabilidad) • [Legal Disclaimer in English](#-legal-disclaimer--terms-of-use) • [Features](#-key-features) • [Architecture](#-architecture) • [Getting Started](#-getting-started)
 
