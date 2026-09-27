@@ -83,6 +83,8 @@ const en = {
     batchAdding: "Adding {{count}} downloads to queue...",
     hideCompleted: "Hide completed",
     hideCompletedDesc: "Hide completed files and only show active or paused downloads",
+    connectingDaemonTitle: "Connecting to aMule engine...",
+    connectingDaemonSub: "Waiting for amuled daemon to sync your transfer queue...",
   },
   servers: {
     title: "eD2K Servers",
@@ -279,6 +281,17 @@ const en = {
     noChanges: "Filename is already clean",
     copied: "Copied to clipboard!",
     launchSuccess: "Launching file with Windows default player...",
+  },
+  splash: {
+    title: "Starting TauriMule...",
+    subtitle: "Starting aMule engine in background and syncing data...",
+    stepDaemon: "Starting amuled process...",
+    stepEc: "Connecting to EC protocol at localhost:4712...",
+    stepSync: "Synchronizing downloads and servers...",
+    stepReady: "aMule engine connected and ready!",
+    timeout: "The aMule engine is taking longer than expected to respond.",
+    retry: "Retry connection",
+    continueAnyway: "Continue anyway",
   },
 };
 

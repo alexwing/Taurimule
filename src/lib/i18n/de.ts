@@ -85,6 +85,8 @@ const de: Dict = {
     batchAdding: "{{count}} Downloads werden zur Warteschlange hinzugefügt...",
     hideCompleted: "Abgeschlossene ausblenden",
     hideCompletedDesc: "Abgeschlossene Dateien ausblenden und nur aktive Downloads anzeigen",
+    connectingDaemonTitle: "Verbindung zur aMule-Engine wird hergestellt...",
+    connectingDaemonSub: "Warte auf Kommunikation mit dem amuled-Dienst, um die Warteschlange zu laden...",
   },
   servers: {
     title: "eD2K-Server",
@@ -281,6 +283,17 @@ const de: Dict = {
     noChanges: "Dateiname ist bereits sauber",
     copied: "In die Zwischenablage kopiert!",
     launchSuccess: "Datei wird mit Windows-Standard-Player gestartet...",
+  },
+  splash: {
+    title: "TauriMule wird gestartet...",
+    subtitle: "aMule-Engine wird im Hintergrund gestartet und Daten werden synchronisiert...",
+    stepDaemon: "amuled-Prozess wird gestartet...",
+    stepEc: "Verbindung zum EC-Protokoll auf localhost:4712...",
+    stepSync: "Downloads und Server werden synchronisiert...",
+    stepReady: "aMule-Engine verbunden und bereit!",
+    timeout: "Die aMule-Engine braucht länger als erwartet zum Antworten.",
+    retry: "Verbindung wiederholen",
+    continueAnyway: "Trotzdem fortfahren",
   },
 };
 

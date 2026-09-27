@@ -85,6 +85,8 @@ const es: Dict = {
     batchAdding: "Añadiendo {{count}} descargas a la cola...",
     hideCompleted: "Ocultar descargados",
     hideCompletedDesc: "Ocultar archivos completados y mostrar solo las descargas activas o en pausa",
+    connectingDaemonTitle: "Conectando al motor aMule...",
+    connectingDaemonSub: "Esperando comunicación con amuled para sincronizar la cola de transferencias...",
   },
   servers: {
     title: "Servidores eD2K",
@@ -281,6 +283,17 @@ const es: Dict = {
     noChanges: "El nombre ya está limpio",
     copied: "¡Copiado al portapapeles!",
     launchSuccess: "Lanzando archivo con el reproductor predeterminado de Windows...",
+  },
+  splash: {
+    title: "Iniciando TauriMule...",
+    subtitle: "Levantando el motor aMule en segundo plano y sincronizando datos...",
+    stepDaemon: "Iniciando proceso amuled...",
+    stepEc: "Conectando al protocolo EC en localhost:4712...",
+    stepSync: "Sincronizando descargas y servidores...",
+    stepReady: "¡Motor aMule conectado y listo!",
+    timeout: "El motor aMule está tardando más de lo previsto en responder.",
+    retry: "Reintentar conexión",
+    continueAnyway: "Continuar de todos modos",
   },
 };
 

@@ -24,6 +24,7 @@ let downloadFilterQuery = "";
 const savedHideCompleted = localStorage.getItem("taurimule_hide_completed");
 let hideCompletedDownloads = savedHideCompleted !== null ? savedHideCompleted === "true" : true;
 let cachedDownloads: DownloadInfo[] = [];
+let isAppStartingUp = true;
 
 export interface SearchTab {
   id: string;
@@ -1333,14 +1334,24 @@ async function renderDownloadsView(): Promise<string> {
                     <div style="width: 56px; height: 56px; display: flex; align-items: center; justify-content: center;">
                       ${getLogoSvg(currentLogoState, 56, "dl-empty")}
                     </div>
-                    <h3>${(downloadFilterQuery || hideCompletedDownloads) && cachedDownloads.length > 0 ? t("downloads.emptyFilterTitle") : t("downloads.emptyQueueTitle")}</h3>
-                    <p style="margin-bottom: 8px;">${(downloadFilterQuery || hideCompletedDownloads) && cachedDownloads.length > 0 ? t("downloads.emptyFilterHelp") : t("downloads.emptyQueueHelp")}</p>
-                    ${cachedDownloads.length === 0 ? `
-                      <div style="display: flex; gap: 10px; margin-top: 10px; justify-content: center;">
-                        <button class="btn btn-primary" id="btn-empty-add-ed2k">➕ ${t("downloads.addEd2kLink")}</button>
-                        <button class="btn btn-secondary" onclick="window.navigateToView('search')">🔍 ${t("downloads.goToSearch")}</button>
-                      </div>
-                    ` : ""}
+                    ${
+                      !currentDaemonStatus?.ec_connected
+                        ? `
+                        <h3>⏳ ${t("downloads.connectingDaemonTitle")}</h3>
+                        <p style="margin-bottom: 12px;">${t("downloads.connectingDaemonSub")}</p>
+                        <button class="btn btn-primary" id="btn-toggle-daemon">▶ ${t("settings.startDaemon")}</button>
+                        `
+                        : `
+                        <h3>${(downloadFilterQuery || hideCompletedDownloads) && cachedDownloads.length > 0 ? t("downloads.emptyFilterTitle") : t("downloads.emptyQueueTitle")}</h3>
+                        <p style="margin-bottom: 8px;">${(downloadFilterQuery || hideCompletedDownloads) && cachedDownloads.length > 0 ? t("downloads.emptyFilterHelp") : t("downloads.emptyQueueHelp")}</p>
+                        ${cachedDownloads.length === 0 ? `
+                          <div style="display: flex; gap: 10px; margin-top: 10px; justify-content: center;">
+                            <button class="btn btn-primary" id="btn-empty-add-ed2k">➕ ${t("downloads.addEd2kLink")}</button>
+                            <button class="btn btn-secondary" onclick="window.navigateToView('search')">🔍 ${t("downloads.goToSearch")}</button>
+                          </div>
+                        ` : ""}
+                        `
+                    }
                   </div>
                  </td></tr>`
               : sorted
@@ -3094,7 +3105,7 @@ function updateFooter(stats: GlobalStats | null) {
   const el = document.getElementById("status-bar");
   if (!el) return;
   if (!stats) {
-    el.innerHTML = `<span>${t("status.disconnectedFromDaemon")}</span>`;
+    el.innerHTML = `<span>${isAppStartingUp ? `⏳ ${t("status.startingDaemon")}` : t("status.disconnectedFromDaemon")}</span>`;
     if (!manualLogoOverride && currentLogoState !== "idle") {
       updateAppLogo("idle");
     }
@@ -3243,9 +3254,112 @@ function renderAppShell() {
   });
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// Application Boot & Startup Screen (Ventana de Espere del Motor aMule)
+// ═══════════════════════════════════════════════════════════════════
+
+async function bootApplication() {
+  renderAppShell();
+
+  // Create & mount the startup splash overlay
+  const splashEl = document.createElement("div");
+  splashEl.id = "taurimule-startup-splash";
+  splashEl.className = "startup-splash-overlay";
+  splashEl.innerHTML = `
+    <div class="startup-splash-card">
+      <div class="splash-logo-container">
+        <div class="splash-pulse-ring"></div>
+        ${getLogoSvg(currentLogoState, 68, "splash-logo")}
+      </div>
+      <div class="splash-title">${t("splash.title")}</div>
+      <div class="splash-subtitle">${t("splash.subtitle")}</div>
+      <div class="splash-progress-track">
+        <div class="splash-progress-bar"></div>
+      </div>
+      <div class="splash-status-text" id="splash-status">${t("splash.stepDaemon")}</div>
+      <div class="splash-timeout-actions" id="splash-timeout-actions">
+        <button class="btn btn-primary btn-sm" id="btn-splash-retry">🔄 ${t("splash.retry")}</button>
+        <button class="btn btn-secondary btn-sm" id="btn-splash-continue">${t("splash.continueAnyway")}</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(splashEl);
+
+  const statusEl = splashEl.querySelector("#splash-status") as HTMLElement | null;
+  const timeoutActions = splashEl.querySelector("#splash-timeout-actions") as HTMLElement | null;
+
+  const dismissSplash = () => {
+    isAppStartingUp = false;
+    splashEl.classList.add("fade-out");
+    setTimeout(() => {
+      splashEl.remove();
+    }, 450);
+    renderView();
+  };
+
+  let checkAttempts = 0;
+  const maxFastAttempts = 40; // ~10 seconds
+
+  splashEl.querySelector("#btn-splash-retry")?.addEventListener("click", async () => {
+    if (timeoutActions) timeoutActions.style.display = "none";
+    if (statusEl) statusEl.textContent = t("splash.stepDaemon");
+    try {
+      await api.startDaemon();
+    } catch {}
+    checkAttempts = 0;
+  });
+
+  splashEl.querySelector("#btn-splash-continue")?.addEventListener("click", () => {
+    dismissSplash();
+  });
+
+  // Fast polling loop to connect to amuled EC protocol
+  const startupTimer = setInterval(async () => {
+    checkAttempts++;
+    try {
+      const status = await api.getDaemonStatus();
+      currentDaemonStatus = status;
+
+      if (status.running && !status.ec_connected) {
+        if (statusEl) statusEl.textContent = t("splash.stepEc");
+      }
+
+      if (status.ec_connected) {
+        clearInterval(startupTimer);
+        if (statusEl) statusEl.textContent = t("splash.stepSync");
+
+        // Preload downloads before removing splash
+        try {
+          cachedDownloads = await api.getDownloadQueue();
+          const badgeEl = document.getElementById("badge-dl-count");
+          if (badgeEl) badgeEl.textContent = cachedDownloads.length.toString();
+        } catch (e) {
+          console.warn("Initial download queue load error:", e);
+        }
+
+        if (statusEl) statusEl.textContent = t("splash.stepReady");
+        setTimeout(() => {
+          dismissSplash();
+        }, 350);
+        return;
+      }
+    } catch (e) {
+      console.warn("Daemon check error:", e);
+    }
+
+    if (checkAttempts >= maxFastAttempts) {
+      clearInterval(startupTimer);
+      if (statusEl) statusEl.textContent = t("splash.timeout");
+      if (timeoutActions) timeoutActions.style.display = "flex";
+    }
+  }, 250);
+
+  // Render downloads view in background
+  navigate("downloads");
+}
+
 // Initial boot
-renderAppShell();
-navigate("downloads");
+bootApplication();
 
 // Global paste listener: if user pastes an eD2k link anywhere in the app
 window.addEventListener("paste", (e: ClipboardEvent) => {

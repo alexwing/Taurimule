@@ -13,8 +13,6 @@ use crate::AppState;
 
 const EC_PORT: u16 = 4712;
 const EC_PASSWORD: &str = "taurimule";
-const STARTUP_WAIT: Duration = Duration::from_secs(3);
-const MAX_CONNECT_RETRIES: u32 = 5;
 
 /// Start the amuled daemon as a sidecar process.
 pub async fn start_amuled(handle: &AppHandle) -> Result<(), String> {
@@ -91,32 +89,25 @@ pub async fn start_amuled(handle: &AppHandle) -> Result<(), String> {
         }
     });
 
-    // Wait for amuled to be ready, then connect via EC
-    tokio::time::sleep(STARTUP_WAIT).await;
-
-    // Retry connection with backoff
+    // Poll for amuled to be ready via EC connection with low-latency retries
+    let max_attempts = 15;
     let mut last_err = String::new();
-    for attempt in 1..=MAX_CONNECT_RETRIES {
+    for attempt in 1..=max_attempts {
+        tokio::time::sleep(Duration::from_millis(if attempt == 1 { 250 } else { 350 })).await;
         match connect_ec(handle).await {
-            Ok(()) => return Ok(()),
+            Ok(()) => {
+                log::info!("EC connected successfully to amuled on attempt {}", attempt);
+                return Ok(());
+            }
             Err(e) => {
-                log::warn!(
-                    "EC connect attempt {}/{} failed: {}",
-                    attempt,
-                    MAX_CONNECT_RETRIES,
-                    e
-                );
                 last_err = e;
-                if attempt < MAX_CONNECT_RETRIES {
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                }
             }
         }
     }
 
     Err(format!(
         "Failed to connect to amuled EC after {} attempts: {}",
-        MAX_CONNECT_RETRIES, last_err
+        max_attempts, last_err
     ))
 }
 
