@@ -74,7 +74,7 @@ jobs:
           }
 
           # 3. NSIS Setup Installer
-          $nsisSetup = Get-ChildItem -Path "src-tauri/target/release/bundle/nsis/*-setup.exe" | Select-Object -First 1
+          $nsisSetup = Get-ChildItem -Path "src-tauri/target/release/bundle/nsis/*.exe" | Select-Object -First 1
           if ($nsisSetup) {
             Copy-Item $nsisSetup.FullName "windows-dist/TauriMule-v$version-Setup.exe" -Force
             Write-Host "Prepared NSIS: windows-dist/TauriMule-v$version-Setup.exe"
