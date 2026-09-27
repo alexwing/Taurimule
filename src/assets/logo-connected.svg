@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="100%" height="100%">
+  <defs>
+    <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#60cdff" />
+      <stop offset="60%" stop-color="#0078d7" />
+      <stop offset="100%" stop-color="#004e8c" />
+    </linearGradient>
+    <linearGradient id="glow" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.3" />
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0" />
+    </linearGradient>
+    <linearGradient id="ei" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="rgba(0,0,0,0.35)" />
+      <stop offset="100%" stop-color="rgba(0,0,0,0.1)" />
+    </linearGradient>
+  </defs>
+  <g>
+    <path d="M 44,46 C 42,32 30,12 36,4 C 43,1 55,20 54,42 Z" fill="url(#g)" />
+    <path d="M 42,42 C 41,30 33,14 38,8 C 42,6 50,22 49,40 Z" fill="url(#ei)" />
+    <path d="M 84,46 C 86,32 98,12 92,4 C 85,1 73,20 74,42 Z" fill="url(#g)" />
+    <path d="M 86,42 C 87,30 95,14 90,8 C 86,6 78,22 79,40 Z" fill="url(#ei)" />
+    <path d="M 46,50 C 30,54 8,50 10,28 C 11,20 14,14 15,13 C 15,16 16,24 22,30 C 29,37 40,41 46,45 Z" fill="url(#g)" />
+    <path d="M 15,13 C 14,20 12,30 22,38 C 30,44 42,48 45,50 C 35,46 22,40 16,30 C 13,23 15,16 15,13 Z" fill="url(#glow)" />
+    <path d="M 82,50 C 98,54 120,50 118,28 C 117,20 114,14 113,13 C 113,16 112,24 106,30 C 99,37 88,41 82,45 Z" fill="url(#g)" />
+    <path d="M 113,13 C 114,20 116,30 106,38 C 98,44 86,48 83,50 C 93,46 106,40 112,30 C 115,23 113,16 113,13 Z" fill="url(#glow)" />
+    <path d="M 44,44 L 64,38 L 84,44 L 88,58 L 78,86 L 72,104 L 64,108 L 56,104 L 50,86 L 40,58 Z" fill="url(#g)" />
+    <polygon points="64,42 78,50 64,58 50,50" fill="rgba(255,255,255,0.25)" />
+    <circle cx="64" cy="50" r="3.5" fill="#ffffff" />
+    <line x1="64" y1="42" x2="64" y2="46.5" stroke="#ffffff" stroke-width="1.5" stroke-linecap="round" />
+    <line x1="64" y1="53.5" x2="64" y2="58" stroke="#ffffff" stroke-width="1.5" stroke-linecap="round" />
+    <line x1="50" y1="50" x2="60.5" y2="50" stroke="#ffffff" stroke-width="1.5" stroke-linecap="round" />
+    <line x1="67.5" y1="50" x2="78" y2="50" stroke="#ffffff" stroke-width="1.5" stroke-linecap="round" />
+    <polygon points="48,60 58,62 50,65" fill="#ffffff" />
+    <polygon points="80,60 70,62 78,65" fill="#ffffff" />
+    <polygon points="64,58 71,84 57,84" fill="rgba(255,255,255,0.12)" />
+    <path d="M 52,86 L 76,86 L 72,102 C 70,105 58,105 56,102 Z" fill="rgba(0,0,0,0.25)" />
+    <ellipse cx="58" cy="94" rx="2.5" ry="3.5" transform="rotate(-15 58 94)" fill="#ffffff" opacity="0.85" />
+    <ellipse cx="70" cy="94" rx="2.5" ry="3.5" transform="rotate(15 70 94)" fill="#ffffff" opacity="0.85" />
+  </g>
+</svg>

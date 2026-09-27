@@ -1,0 +1,2585 @@
+import "./styles/global.css";
+import {
+  api,
+  type GlobalStats,
+  type DownloadInfo,
+  type ServerInfo,
+  type UploadInfo,
+  type DaemonStatus,
+  type SearchResult,
+} from "./lib/tauri-bridge";
+import { getLogoSvg, getLogoDataUri, type LogoState } from "./lib/logo";
+import { ThemeManager, type ColorScheme } from "./lib/theme";
+import { t, I18nManager, type LanguageSetting } from "./lib/i18n";
+import { cleanFilename, renderDiffHtml } from "./lib/filename-cleaner";
+import { showContextMenu, type ContextMenuItem } from "./lib/context-menu";
+
+type ViewName = "downloads" | "servers" | "search" | "uploads" | "settings";
+
+let currentView: ViewName = "downloads";
+let pollInterval: ReturnType<typeof setInterval> | null = null;
+let currentDaemonStatus: DaemonStatus | null = null;
+let downloadFilterQuery = "";
+const savedHideCompleted = localStorage.getItem("taurimule_hide_completed");
+let hideCompletedDownloads = savedHideCompleted !== null ? savedHideCompleted === "true" : true;
+let cachedDownloads: DownloadInfo[] = [];
+
+export interface SearchTab {
+  id: string;
+  query: string;
+  searchType: "Global" | "Kad" | "Local";
+  fileType?: string;
+  results: SearchResult[];
+  isSearching: boolean;
+  timestamp: number;
+}
+
+export interface SearchHistoryEntry {
+  query: string;
+  searchType: string;
+  fileType?: string;
+  timestamp: number;
+}
+
+let searchTabs: SearchTab[] = [];
+let activeSearchTabId: string | null = null;
+let searchHistory: SearchHistoryEntry[] = [];
+
+function loadSearchHistory(): void {
+  try {
+    const saved = localStorage.getItem("taurimule_search_history");
+    if (saved) {
+      searchHistory = JSON.parse(saved);
+    }
+  } catch (e) {
+    searchHistory = [];
+  }
+}
+
+function saveSearchHistory(): void {
+  try {
+    localStorage.setItem("taurimule_search_history", JSON.stringify(searchHistory.slice(0, 30)));
+  } catch (e) {}
+}
+
+function addToSearchHistory(query: string, searchType: string, fileType?: string): void {
+  const clean = query.trim();
+  if (!clean) return;
+  searchHistory = searchHistory.filter((item) => item.query.toLowerCase() !== clean.toLowerCase());
+  searchHistory.unshift({
+    query: clean,
+    searchType,
+    fileType,
+    timestamp: Date.now(),
+  });
+  saveSearchHistory();
+}
+
+function removeFromSearchHistory(query: string): void {
+  searchHistory = searchHistory.filter((item) => item.query.toLowerCase() !== query.toLowerCase());
+  saveSearchHistory();
+}
+
+function clearAllSearchHistory(): void {
+  searchHistory = [];
+  saveSearchHistory();
+}
+
+function getActiveTab(): SearchTab | null {
+  if (!activeSearchTabId) {
+    return searchTabs.length > 0 ? searchTabs[0] : null;
+  }
+  return searchTabs.find((t) => t.id === activeSearchTabId) || (searchTabs.length > 0 ? searchTabs[0] : null);
+}
+
+function createOrActivateSearchTab(
+  query: string,
+  searchType: "Global" | "Kad" | "Local",
+  fileType?: string
+): SearchTab {
+  const existing = searchTabs.find(
+    (t) => t.query.toLowerCase() === query.trim().toLowerCase()
+  );
+  if (existing) {
+    activeSearchTabId = existing.id;
+    existing.searchType = searchType;
+    existing.fileType = fileType;
+    return existing;
+  }
+
+  const newTab: SearchTab = {
+    id: `tab_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+    query: query.trim(),
+    searchType,
+    fileType,
+    results: [],
+    isSearching: true,
+    timestamp: Date.now(),
+  };
+  searchTabs.push(newTab);
+  activeSearchTabId = newTab.id;
+  return newTab;
+}
+
+function closeSearchTab(tabId: string): void {
+  const idx = searchTabs.findIndex((t) => t.id === tabId);
+  if (idx === -1) return;
+  searchTabs.splice(idx, 1);
+  if (activeSearchTabId === tabId) {
+    if (searchTabs.length > 0) {
+      const nextIdx = Math.min(idx, searchTabs.length - 1);
+      activeSearchTabId = searchTabs[nextIdx].id;
+    } else {
+      activeSearchTabId = null;
+    }
+  }
+}
+
+let currentLogoState: LogoState = "connected";
+let manualLogoOverride: LogoState | null = null;
+let lastStats: GlobalStats | null = null;
+
+// Table sorting state
+type SortDirection = "asc" | "desc";
+type DownloadSortColumn = "name" | "size" | "progress" | "speed" | "sources";
+let downloadSortColumn: DownloadSortColumn = "progress";
+let downloadSortDirection: SortDirection = "desc";
+
+type SearchSortColumn = "name" | "size" | "sources" | "file_type";
+let searchSortColumn: SearchSortColumn = "sources";
+let searchSortDirection: SortDirection = "desc";
+
+// Initialize Theme, i18n & Search History
+ThemeManager.initTheme();
+I18nManager.initI18n();
+loadSearchHistory();
+
+// Listen to language changes to re-render UI
+I18nManager.onLanguageChange(() => {
+  renderAppShell();
+  renderView();
+  updateFooter(lastStats);
+});
+
+// Global navigation helper
+(window as any).navigateToView = (view: ViewName) => navigate(view);
+
+function safeDecode(val?: string): string {
+  if (!val) return "";
+  try {
+    return decodeURIComponent(val);
+  } catch {
+    try {
+      return decodeURI(val);
+    } catch {
+      return val;
+    }
+  }
+}
+
+function getLocalizedLogoLabel(state: LogoState): string {
+  switch (state) {
+    case "connected":
+      return t("status.connectedHighId");
+    case "downloading":
+      return t("status.downloading");
+    case "warning":
+      return t("status.warning");
+    case "idle":
+      return t("status.idle");
+  }
+}
+
+function updateAppLogo(state: LogoState) {
+  currentLogoState = state;
+  const logoEl = document.getElementById("sidebar-logo-container");
+  if (logoEl) {
+    logoEl.innerHTML = getLogoSvg(state, 28, "sb-logo");
+    logoEl.title = `TauriMule: ${getLocalizedLogoLabel(state)}`;
+  }
+
+  const brandTag = document.getElementById("brand-status-tag");
+  if (brandTag) {
+    brandTag.textContent = getLocalizedLogoLabel(state);
+    brandTag.className = `brand-badge state-${state}`;
+  }
+
+  const settingsPreview = document.getElementById("settings-logo-preview");
+  if (settingsPreview) {
+    settingsPreview.innerHTML = getLogoSvg(state, 84, "settings-preview");
+  }
+
+  const settingsBadge = document.getElementById("settings-badge");
+  if (settingsBadge) {
+    settingsBadge.textContent = getLocalizedLogoLabel(state);
+    settingsBadge.className = `brand-badge state-${state}`;
+  }
+
+  const stateFeedback = document.getElementById("state-feedback");
+  if (stateFeedback) {
+    const modeStr = manualLogoOverride
+      ? t("settings.modeManual", { state: getLocalizedLogoLabel(manualLogoOverride) })
+      : t("settings.modeAuto", { state: getLocalizedLogoLabel(state) });
+    stateFeedback.textContent = t("settings.currentMode", { mode: modeStr });
+  }
+
+  // Dynamic Browser Favicon
+  let favicon = document.querySelector<HTMLLinkElement>("link[rel~='icon']");
+  if (!favicon) {
+    favicon = document.createElement("link");
+    favicon.rel = "icon";
+    document.head.appendChild(favicon);
+  }
+  favicon.href = getLogoDataUri(state);
+
+  // Sync native OS tray icon
+  api.setTrayIconState(state).catch(() => {});
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Format Helpers
+// ═══════════════════════════════════════════════════════════════════
+
+function formatSpeed(bytesPerSec: number): string {
+  if (bytesPerSec <= 0) return "0 B/s";
+  if (bytesPerSec < 1024) return `${bytesPerSec.toFixed(0)} B/s`;
+  if (bytesPerSec < 1024 * 1024) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`;
+  return `${(bytesPerSec / (1024 * 1024)).toFixed(2)} MB/s`;
+}
+
+function formatSize(bytes: number): string {
+  if (bytes <= 0) return "0 B";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+function getFileIcon(name: string): string {
+  const lower = name.toLowerCase();
+  if (lower.endsWith(".mkv") || lower.endsWith(".mp4") || lower.endsWith(".avi")) return "🎬";
+  if (lower.endsWith(".mp3") || lower.endsWith(".flac") || lower.endsWith(".wav")) return "🎵";
+  if (lower.endsWith(".zip") || lower.endsWith(".rar") || lower.endsWith(".7z")) return "📦";
+  if (lower.endsWith(".iso") || lower.endsWith(".bin") || lower.endsWith(".img")) return "💿";
+  if (lower.endsWith(".exe") || lower.endsWith(".msi")) return "💾";
+  if (lower.endsWith(".pdf") || lower.endsWith(".txt") || lower.endsWith(".doc")) return "📄";
+  return "📁";
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Table Sorting Helpers
+// ═══════════════════════════════════════════════════════════════════
+
+function sortDownloads(
+  items: DownloadInfo[],
+  col: DownloadSortColumn,
+  dir: SortDirection
+): DownloadInfo[] {
+  const mult = dir === "asc" ? 1 : -1;
+  return [...items].sort((a, b) => {
+    switch (col) {
+      case "name":
+        return mult * a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+      case "size":
+        return mult * (a.size_total - b.size_total);
+      case "progress":
+        return mult * (a.progress - b.progress);
+      case "speed":
+        return mult * (a.speed - b.speed);
+      case "sources": {
+        const scoreA = a.sources_transferring * 100000 + a.sources_total;
+        const scoreB = b.sources_transferring * 100000 + b.sources_total;
+        return mult * (scoreA - scoreB);
+      }
+      default:
+        return 0;
+    }
+  });
+}
+
+function renderDownloadSortIcon(col: DownloadSortColumn): string {
+  if (downloadSortColumn === col) {
+    return `<span class="sort-icon">${downloadSortDirection === "asc" ? "▲" : "▼"}</span>`;
+  }
+  return `<span class="sort-icon sort-icon-muted">⇅</span>`;
+}
+
+function sortSearchResults(
+  items: SearchResult[],
+  col: SearchSortColumn,
+  dir: SortDirection
+): SearchResult[] {
+  const mult = dir === "asc" ? 1 : -1;
+  return [...items].sort((a, b) => {
+    switch (col) {
+      case "name":
+        return mult * a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+      case "size":
+        return mult * (a.size - b.size);
+      case "sources":
+        return mult * (a.sources - b.sources);
+      case "file_type":
+        return mult * a.file_type.localeCompare(b.file_type);
+      default:
+        return 0;
+    }
+  });
+}
+
+function renderSearchSortIcon(col: SearchSortColumn): string {
+  if (searchSortColumn === col) {
+    return `<span class="sort-icon">${searchSortDirection === "asc" ? "▲" : "▼"}</span>`;
+  }
+  return `<span class="sort-icon sort-icon-muted">⇅</span>`;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Toast & Filename Cleaner Modal Helpers (Syncdrome style)
+// ═══════════════════════════════════════════════════════════════════
+
+function showToast(message: string, duration = 2600) {
+  const existing = document.getElementById("taurimule-toast");
+  if (existing) existing.remove();
+  const toast = document.createElement("div");
+  toast.id = "taurimule-toast";
+  toast.className = "fluent-toast";
+  toast.innerHTML = message;
+  document.body.appendChild(toast);
+  setTimeout(() => {
+    toast.classList.add("fade-out");
+    setTimeout(() => toast.remove(), 320);
+  }, duration);
+}
+
+function showFilenameCleanModal(
+  originalFilename: string,
+  mode: "download" | "rename",
+  onConfirm: (finalCleanName: string) => Promise<void> | void
+) {
+  document.getElementById("taurimule-clean-modal")?.remove();
+
+  const initialClean = cleanFilename(originalFilename);
+  let currentCutPattern = "";
+  let currentCleanedValue = initialClean.cleaned;
+
+  const modalOverlay = document.createElement("div");
+  modalOverlay.id = "taurimule-clean-modal";
+  modalOverlay.className = "fluent-modal-overlay";
+
+  const renderModalContent = () => {
+    const res = cleanFilename(originalFilename, currentCutPattern);
+    const charsRemoved = Math.max(0, originalFilename.length - currentCleanedValue.length);
+
+    modalOverlay.innerHTML = `
+      <div class="fluent-modal-content">
+        <div class="modal-header">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 18px;">🧹</span>
+            <div>
+              <h3>${t("cleaner.title")}</h3>
+              <div style="font-size: 11px; color: var(--text-tertiary);">${t("cleaner.subtitle")}</div>
+            </div>
+          </div>
+          <button class="btn btn-secondary btn-icon" id="btn-modal-close" style="padding: 2px 8px; font-size: 14px;">✕</button>
+        </div>
+
+        <div class="modal-body">
+          <div>
+            <label style="font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 4px;">
+              ${t("cleaner.originalName")}
+            </label>
+            <div style="font-family: var(--font-mono); font-size: 12px; background: var(--bg-card-header); padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); color: var(--text-muted); word-break: break-all;">
+              ${originalFilename}
+            </div>
+          </div>
+
+          <div>
+            <label style="font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 4px;">
+              ${t("cleaner.cutPattern")}
+            </label>
+            <input 
+              type="text" 
+              id="input-cut-pattern" 
+              placeholder="${t("cleaner.cutPlaceholder")}" 
+              class="table-search-input" 
+              style="width: 100%; box-sizing: border-box;" 
+              value="${currentCutPattern}"
+            />
+          </div>
+
+          <div>
+            <label style="font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 4px;">
+              ${t("cleaner.cleanedName")}
+            </label>
+            <input 
+              type="text" 
+              id="input-cleaned-name" 
+              class="table-search-input" 
+              style="width: 100%; box-sizing: border-box; font-weight: 600; color: var(--primary);" 
+              value="${currentCleanedValue}"
+            />
+          </div>
+
+          <div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+              <label style="font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px;">
+                ${t("cleaner.diffPreview")}
+              </label>
+              <span style="font-size: 11px; color: ${charsRemoved > 0 ? "var(--warning)" : "var(--text-tertiary)"}; font-weight: 500;">
+                ${charsRemoved > 0 ? t("cleaner.charsRemoved", { count: charsRemoved }) : t("cleaner.noChanges")}
+              </span>
+            </div>
+            <div class="diff-preview-box">
+              ${renderDiffHtml(res.diff)}
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="btn-modal-cancel">${t("common.cancel")}</button>
+          <button class="btn btn-primary" id="btn-modal-confirm">
+            ${mode === "download" ? `⬇ ${t("cleaner.downloadClean")}` : `✏️ ${t("cleaner.applyRename")}`}
+          </button>
+        </div>
+      </div>
+    `;
+
+    const closeBtn = modalOverlay.querySelector("#btn-modal-close");
+    const cancelBtn = modalOverlay.querySelector("#btn-modal-cancel");
+    const confirmBtn = modalOverlay.querySelector("#btn-modal-confirm");
+    const cutInput = modalOverlay.querySelector("#input-cut-pattern") as HTMLInputElement | null;
+    const cleanInput = modalOverlay.querySelector("#input-cleaned-name") as HTMLInputElement | null;
+
+    closeBtn?.addEventListener("click", () => modalOverlay.remove());
+    cancelBtn?.addEventListener("click", () => modalOverlay.remove());
+
+    confirmBtn?.addEventListener("click", async () => {
+      const finalName = cleanInput?.value.trim() || currentCleanedValue;
+      modalOverlay.remove();
+      await onConfirm(finalName);
+    });
+
+    cutInput?.addEventListener("input", (e) => {
+      currentCutPattern = (e.target as HTMLInputElement).value;
+      const updated = cleanFilename(originalFilename, currentCutPattern);
+      currentCleanedValue = updated.cleaned;
+      renderModalContent();
+      const newCut = modalOverlay.querySelector("#input-cut-pattern") as HTMLInputElement | null;
+      if (newCut) {
+        newCut.focus();
+        newCut.selectionStart = newCut.selectionEnd = newCut.value.length;
+      }
+    });
+
+    cleanInput?.addEventListener("input", (e) => {
+      currentCleanedValue = (e.target as HTMLInputElement).value;
+    });
+
+    cleanInput?.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        confirmBtn?.dispatchEvent(new MouseEvent("click"));
+      }
+    });
+  };
+
+  renderModalContent();
+  document.body.appendChild(modalOverlay);
+
+  const handleKeydown = (e: KeyboardEvent) => {
+    if (e.key === "Escape") {
+      modalOverlay.remove();
+      window.removeEventListener("keydown", handleKeydown);
+    }
+  };
+  window.addEventListener("keydown", handleKeydown);
+
+  modalOverlay.addEventListener("click", (e) => {
+    if (e.target === modalOverlay) {
+      modalOverlay.remove();
+      window.removeEventListener("keydown", handleKeydown);
+    }
+  });
+
+  setTimeout(() => {
+    const cleanInput = modalOverlay.querySelector("#input-cleaned-name") as HTMLInputElement | null;
+    cleanInput?.focus();
+    cleanInput?.select();
+  }, 60);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Add eD2k Link Modal (Parser + Clean Download + Direct Download)
+// ═══════════════════════════════════════════════════════════════════
+
+interface ParsedEd2kInfo {
+  rawLink: string;
+  name: string;
+  size: number;
+  hash: string;
+}
+
+function parseAllEd2kLinks(text: string): ParsedEd2kInfo[] {
+  if (!text) return [];
+  const lines = text.split(/\r?\n/);
+  const links: ParsedEd2kInfo[] = [];
+  const seenHashes = new Set<string>();
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const match = trimmed.match(/ed2k:\/\/\|file\|([^|]+)\|(\d+)\|([a-fA-F0-9]{32})/);
+    if (match) {
+      const rawName = match[1];
+      const size = parseInt(match[2], 10);
+      const hash = match[3].toUpperCase();
+      if (seenHashes.has(hash)) continue;
+      seenHashes.add(hash);
+
+      let name = rawName;
+      try {
+        name = decodeURIComponent(rawName);
+      } catch {
+        name = rawName;
+      }
+      let rawLink = trimmed;
+      if (!rawLink.startsWith("ed2k://")) {
+        rawLink = `ed2k://|file|${rawName}|${size}|${hash}|/`;
+      } else if (!rawLink.endsWith("|/")) {
+        rawLink = rawLink.endsWith("/") ? rawLink : (rawLink.endsWith("|") ? rawLink + "/" : rawLink + "|/");
+      }
+      links.push({ rawLink, name, size, hash });
+    }
+  }
+
+  // Also catch multiple links pasted on a single line
+  if (links.length <= 1 && text.includes("ed2k://|file|")) {
+    const globalRegex = /ed2k:\/\/\|file\|([^|]+)\|(\d+)\|([a-fA-F0-9]{32})[^\r\n]*?\|\//g;
+    let m: RegExpExecArray | null;
+    const inlineLinks: ParsedEd2kInfo[] = [];
+    const inlineSeen = new Set<string>();
+    while ((m = globalRegex.exec(text)) !== null) {
+      const rawName = m[1];
+      const size = parseInt(m[2], 10);
+      const hash = m[3].toUpperCase();
+      if (inlineSeen.has(hash)) continue;
+      inlineSeen.add(hash);
+      let name = rawName;
+      try {
+        name = decodeURIComponent(rawName);
+      } catch {
+        name = rawName;
+      }
+      inlineLinks.push({
+        rawLink: m[0],
+        name,
+        size,
+        hash,
+      });
+    }
+    if (inlineLinks.length > links.length) {
+      return inlineLinks;
+    }
+  }
+
+  return links;
+}
+
+function parseEd2kLink(text: string): ParsedEd2kInfo | null {
+  const all = parseAllEd2kLinks(text);
+  return all.length > 0 ? all[0] : null;
+}
+
+function showAddEd2kModal(initialText = "") {
+  document.getElementById("taurimule-ed2k-modal")?.remove();
+
+  let currentLinkText = initialText.trim();
+  let currentCutPattern = "";
+  let manualCleanNames: { [index: number]: string } = {};
+
+  const modalOverlay = document.createElement("div");
+  modalOverlay.id = "taurimule-ed2k-modal";
+  modalOverlay.className = "fluent-modal-overlay";
+
+  const renderModalContent = () => {
+    const parsedList = parseAllEd2kLinks(currentLinkText);
+    const isBatch = parsedList.length > 1;
+    const totalBytes = parsedList.reduce((acc, x) => acc + x.size, 0);
+
+    let bodyContentHtml = "";
+
+    if (parsedList.length === 1) {
+      const parsed = parsedList[0];
+      const cleanRes = cleanFilename(parsed.name, currentCutPattern);
+      const cleanProposal = manualCleanNames[0] !== undefined ? manualCleanNames[0] : cleanRes.cleaned;
+      const charsRemoved = Math.max(0, parsed.name.length - cleanProposal.length);
+      const diffPreviewHtml = renderDiffHtml(cleanRes.diff);
+
+      bodyContentHtml = `
+        <div style="background: var(--bg-card-header); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 14px; display: flex; flex-direction: column; gap: 10px;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 18px;">${getFileIcon(parsed.name)}</span>
+              <span style="font-weight: 600; font-size: 12.5px; color: var(--text-primary);">${t("downloads.parsedInfoTitle")}</span>
+            </div>
+            <span class="metric-badge badge-primary">${formatSize(parsed.size)}</span>
+          </div>
+
+          <div style="font-family: var(--font-mono); font-size: 11.5px; color: var(--text-secondary); background: var(--bg-input); padding: 6px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); word-break: break-all;">
+            ${parsed.name}
+          </div>
+
+          <div>
+            <label style="font-size: 10.5px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 4px;">
+              ${t("cleaner.cutPattern")}
+            </label>
+            <input 
+              type="text" 
+              id="input-ed2k-cut" 
+              placeholder="${t("cleaner.cutPlaceholder")}" 
+              class="table-search-input" 
+              style="width: 100%; box-sizing: border-box; font-size: 12px;" 
+              value="${currentCutPattern}"
+            />
+          </div>
+
+          <div>
+            <label style="font-size: 10.5px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 4px;">
+              ${t("downloads.cleanProposedName")}
+            </label>
+            <input 
+              type="text" 
+              id="input-ed2k-clean-0" 
+              class="table-search-input" 
+              style="width: 100%; box-sizing: border-box; font-weight: 600; color: var(--primary); font-size: 12.5px;" 
+              value="${cleanProposal}"
+            />
+          </div>
+
+          <div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+              <label style="font-size: 10.5px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px;">
+                ${t("cleaner.diffPreview")}
+              </label>
+              <span style="font-size: 11px; color: ${charsRemoved > 0 ? "var(--warning)" : "var(--text-tertiary)"}; font-weight: 500;">
+                ${charsRemoved > 0 ? t("cleaner.charsRemoved", { count: charsRemoved }) : t("cleaner.noChanges")}
+              </span>
+            </div>
+            <div class="diff-preview-box" style="font-size: 11px; padding: 8px 10px;">
+              ${diffPreviewHtml}
+            </div>
+          </div>
+
+          <div style="font-size: 10.5px; font-family: var(--font-mono); color: var(--text-tertiary);">
+            Hash: <strong>${parsed.hash}</strong>
+          </div>
+        </div>`;
+    } else if (isBatch) {
+      bodyContentHtml = `
+        <div style="background: var(--bg-card-header); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 14px; display: flex; flex-direction: column; gap: 12px;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 18px;">📦</span>
+              <span style="font-weight: 600; font-size: 13px; color: var(--text-primary);">
+                ${t("downloads.batchDetected", { count: parsedList.length })}
+              </span>
+            </div>
+            <span class="metric-badge badge-primary" style="font-size: 11.5px; font-weight: 600;">
+              ${t("downloads.totalBatchSize")}: ${formatSize(totalBytes)}
+            </span>
+          </div>
+
+          <div>
+            <label style="font-size: 10.5px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 4px;">
+              ${t("cleaner.cutPattern")} (aplica a todos los archivos del lote)
+            </label>
+            <input 
+              type="text" 
+              id="input-ed2k-cut" 
+              placeholder="${t("cleaner.cutPlaceholder")}" 
+              class="table-search-input" 
+              style="width: 100%; box-sizing: border-box; font-size: 12px;" 
+              value="${currentCutPattern}"
+            />
+          </div>
+
+          <div style="max-height: 270px; overflow-y: auto; padding-right: 4px; display: flex; flex-direction: column; gap: 8px;">
+            ${parsedList
+              .map((item, idx) => {
+                const cleanRes = cleanFilename(item.name, currentCutPattern);
+                const val = manualCleanNames[idx] !== undefined ? manualCleanNames[idx] : cleanRes.cleaned;
+                return `
+                  <div style="background: var(--bg-input); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 8px 10px; display: flex; flex-direction: column; gap: 4px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+                      <div style="display: flex; align-items: center; gap: 6px; overflow: hidden;">
+                        <span class="metric-badge badge-secondary" style="font-family: var(--font-mono); font-size: 10px; padding: 1px 5px;">#${idx + 1}</span>
+                        <span style="font-family: var(--font-mono); font-size: 10.5px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${item.name}">${item.name}</span>
+                      </div>
+                      <span style="font-family: var(--font-mono); font-size: 10.5px; color: var(--text-secondary); flex-shrink: 0;">${formatSize(item.size)}</span>
+                    </div>
+                    <input 
+                      type="text" 
+                      class="table-search-input batch-clean-input" 
+                      data-index="${idx}" 
+                      value="${val}" 
+                      style="width: 100%; box-sizing: border-box; font-size: 11.5px; font-weight: 500; color: var(--primary);" 
+                    />
+                  </div>`;
+              })
+              .join("")}
+          </div>
+        </div>`;
+    } else if (currentLinkText.length > 5) {
+      bodyContentHtml = `
+        <div style="padding: 10px 14px; border-radius: var(--radius-sm); background: rgba(248, 81, 73, 0.1); border: 1px solid rgba(248, 81, 73, 0.25); color: var(--danger); font-size: 12px;">
+          ⚠️ ${t("downloads.invalidLinkError")}
+        </div>`;
+    }
+
+    modalOverlay.innerHTML = `
+      <div class="fluent-modal-content" style="max-width: ${isBatch ? 680 : 620}px;">
+        <div class="modal-header">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 18px;">${isBatch ? "📦" : "🔗"}</span>
+            <div>
+              <h3>${t("downloads.addLinkModalTitle")}</h3>
+              <div style="font-size: 11px; color: var(--text-tertiary);">${t("downloads.addLinkModalSubtitle")}</div>
+            </div>
+          </div>
+          <button class="btn btn-secondary btn-icon" id="btn-ed2k-close" style="padding: 2px 8px; font-size: 14px;">✕</button>
+        </div>
+
+        <div class="modal-body">
+          <div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+              <label style="font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px;">
+                ${t("downloads.linkInputLabel")}
+              </label>
+              <button class="btn btn-secondary btn-sm" id="btn-ed2k-paste-clipboard" style="font-size: 11px; padding: 3px 8px;">
+                📋 ${t("downloads.pasteFromClipboard")}
+              </button>
+            </div>
+            <textarea 
+              id="input-ed2k-textarea" 
+              class="search-main-input" 
+              rows="${isBatch ? 4 : 3}" 
+              placeholder="ed2k://|file|nombre|tamaño|hash|/" 
+              style="width: 100%; box-sizing: border-box; font-family: var(--font-mono); font-size: 11px; resize: vertical; line-height: 1.4;"
+            >${currentLinkText}</textarea>
+          </div>
+
+          ${bodyContentHtml}
+        </div>
+
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="btn-ed2k-cancel">${t("common.cancel")}</button>
+          ${
+            parsedList.length > 0
+              ? `
+              <button class="btn btn-secondary" id="btn-ed2k-download-orig">
+                ⬇ ${isBatch ? t("downloads.originalDownloadAll", { count: parsedList.length }) : t("downloads.originalDownloadBtn")}
+              </button>
+              <button class="btn btn-primary" id="btn-ed2k-download-clean">
+                🧹 ${isBatch ? t("downloads.cleanDownloadAll", { count: parsedList.length }) : t("downloads.cleanDownloadBtn")}
+              </button>
+              `
+              : ""
+          }
+        </div>
+      </div>
+    `;
+
+    // Event attachments
+    const closeBtn = modalOverlay.querySelector("#btn-ed2k-close");
+    const cancelBtn = modalOverlay.querySelector("#btn-ed2k-cancel");
+    const pasteBtn = modalOverlay.querySelector("#btn-ed2k-paste-clipboard");
+    const textarea = modalOverlay.querySelector("#input-ed2k-textarea") as HTMLTextAreaElement | null;
+    const cutInput = modalOverlay.querySelector("#input-ed2k-cut") as HTMLInputElement | null;
+    const downloadOrigBtn = modalOverlay.querySelector("#btn-ed2k-download-orig");
+    const downloadCleanBtn = modalOverlay.querySelector("#btn-ed2k-download-clean");
+
+    closeBtn?.addEventListener("click", () => modalOverlay.remove());
+    cancelBtn?.addEventListener("click", () => modalOverlay.remove());
+
+    pasteBtn?.addEventListener("click", async () => {
+      try {
+        const text = await navigator.clipboard.readText();
+        if (text) {
+          currentLinkText = text.trim();
+          manualCleanNames = {};
+          renderModalContent();
+        }
+      } catch (err) {
+        showToast("⚠️ No se pudo leer el portapapeles: " + err);
+      }
+    });
+
+    textarea?.addEventListener("input", (e) => {
+      currentLinkText = (e.target as HTMLTextAreaElement).value;
+      manualCleanNames = {};
+      renderModalContent();
+      const newTextarea = modalOverlay.querySelector("#input-ed2k-textarea") as HTMLTextAreaElement | null;
+      if (newTextarea) {
+        newTextarea.focus();
+        newTextarea.selectionStart = newTextarea.selectionEnd = newTextarea.value.length;
+      }
+    });
+
+    cutInput?.addEventListener("input", (e) => {
+      currentCutPattern = (e.target as HTMLInputElement).value;
+      manualCleanNames = {};
+      renderModalContent();
+      const newCut = modalOverlay.querySelector("#input-ed2k-cut") as HTMLInputElement | null;
+      if (newCut) {
+        newCut.focus();
+        newCut.selectionStart = newCut.selectionEnd = newCut.value.length;
+      }
+    });
+
+    // Single clean input listener
+    const singleCleanInput = modalOverlay.querySelector("#input-ed2k-clean-0") as HTMLInputElement | null;
+    singleCleanInput?.addEventListener("input", (e) => {
+      manualCleanNames[0] = (e.target as HTMLInputElement).value;
+    });
+
+    // Batch clean inputs listener
+    modalOverlay.querySelectorAll<HTMLInputElement>(".batch-clean-input").forEach((inp) => {
+      inp.addEventListener("input", (e) => {
+        const idx = parseInt((e.target as HTMLInputElement).dataset.index || "0", 10);
+        manualCleanNames[idx] = (e.target as HTMLInputElement).value;
+      });
+    });
+
+    const executeAdd = async (useCleanNames: boolean) => {
+      if (parsedList.length === 0) return;
+      try {
+        modalOverlay.remove();
+        if (parsedList.length === 1) {
+          const item = parsedList[0];
+          const cleanProposal = manualCleanNames[0] || cleanFilename(item.name, currentCutPattern).cleaned;
+          showToast(`⬇ Añadiendo descarga eD2k...`);
+          const res = await api.addEd2kLink(item.rawLink, useCleanNames ? cleanProposal : undefined);
+          showToast(`✅ ${t("downloads.linkAddedSuccess")}: ${res.name}`);
+        } else {
+          showToast(`⬇ ${t("downloads.batchAdding", { count: parsedList.length })}`);
+          const batchItems = parsedList.map((item, idx) => {
+            const cleanProposal = manualCleanNames[idx] || cleanFilename(item.name, currentCutPattern).cleaned;
+            return {
+              link: item.rawLink,
+              clean_name: useCleanNames ? cleanProposal : undefined,
+            };
+          });
+          await api.addEd2kLinks(batchItems);
+          showToast(`✅ ${t("downloads.batchAddedSuccess", { count: batchItems.length })}`);
+        }
+        navigate("downloads");
+      } catch (err) {
+        showToast(`⚠️ Error al añadir enlaces: ${err}`);
+      }
+    };
+
+    downloadOrigBtn?.addEventListener("click", () => executeAdd(false));
+    downloadCleanBtn?.addEventListener("click", () => executeAdd(true));
+  };
+
+  renderModalContent();
+  document.body.appendChild(modalOverlay);
+
+  const ta = modalOverlay.querySelector("#input-ed2k-textarea") as HTMLTextAreaElement | null;
+  if (ta) {
+    ta.focus();
+    if (currentLinkText) {
+      ta.select();
+    }
+  }
+
+  const handleKeydown = (e: KeyboardEvent) => {
+    if (e.key === "Escape") {
+      modalOverlay.remove();
+      window.removeEventListener("keydown", handleKeydown);
+    }
+  };
+  window.addEventListener("keydown", handleKeydown);
+
+  modalOverlay.addEventListener("click", (e) => {
+    if (e.target === modalOverlay) {
+      modalOverlay.remove();
+      window.removeEventListener("keydown", handleKeydown);
+    }
+  });
+}
+
+async function openAddEd2kModalWithClipboardCheck() {
+  let initial = "";
+  try {
+    const text = await navigator.clipboard.readText();
+    if (text && text.includes("ed2k://|file|")) {
+      initial = text.trim();
+    }
+  } catch {}
+  showAddEd2kModal(initial);
+}
+
+(window as any).showAddEd2kModal = showAddEd2kModal;
+(window as any).openAddEd2kModalWithClipboardCheck = openAddEd2kModalWithClipboardCheck;
+(window as any).parseEd2kLink = parseEd2kLink;
+(window as any).parseAllEd2kLinks = parseAllEd2kLinks;
+
+// ═══════════════════════════════════════════════════════════════════
+// SPA Router & Navigation
+// ═══════════════════════════════════════════════════════════════════
+
+function navigate(view: ViewName) {
+  currentView = view;
+  document.querySelectorAll(".nav-item").forEach((el) => el.classList.remove("active"));
+  document.querySelector(`[data-view="${view}"]`)?.classList.add("active");
+  renderView();
+  startPolling();
+}
+
+async function renderView() {
+  const content = document.getElementById("content");
+  if (!content) return;
+
+  // Refresh daemon status
+  try {
+    currentDaemonStatus = await api.getDaemonStatus();
+  } catch {
+    currentDaemonStatus = null;
+  }
+
+  switch (currentView) {
+    case "downloads":
+      content.innerHTML = await renderDownloadsView();
+      break;
+    case "servers":
+      content.innerHTML = await renderServersView();
+      break;
+    case "search":
+      content.innerHTML = renderSearchView();
+      break;
+    case "uploads":
+      content.innerHTML = await renderUploadsView();
+      break;
+    case "settings":
+      content.innerHTML = renderSettingsView();
+      break;
+  }
+
+  attachEventListeners();
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Common Header Component
+// ═══════════════════════════════════════════════════════════════════
+
+function renderHeader(title: string, subtitle: string, breadcrumb: string): string {
+  const isRunning = currentDaemonStatus?.running ?? false;
+  const pid = currentDaemonStatus?.pid;
+
+  return `
+    <div class="breadcrumb">
+      <span class="breadcrumb-link" data-nav="downloads">${t("common.home")}</span>
+      <span class="breadcrumb-separator">/</span>
+      <span class="breadcrumb-current">${breadcrumb}</span>
+    </div>
+    <div class="view-header-container">
+      <div>
+        <h1 class="view-title">${title}</h1>
+        <p class="view-subtitle">${subtitle}</p>
+      </div>
+      <div class="daemon-control-bar">
+        <div class="daemon-indicator">
+          <span class="status-dot ${isRunning ? "" : "stopped"}"></span>
+          <span>${isRunning ? `amuled ${pid ? `(PID: ${pid})` : ""}` : t("settings.daemonStopped")}</span>
+        </div>
+        ${
+          isRunning
+            ? `<button class="btn btn-secondary btn-icon" id="btn-toggle-daemon" title="${t("settings.stopDaemon")}">⏹ ${t("settings.stopDaemon")}</button>`
+            : `<button class="btn btn-primary btn-icon" id="btn-toggle-daemon" title="${t("settings.startDaemon")}">▶ ${t("settings.startDaemon")}</button>`
+        }
+      </div>
+    </div>`;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// 1. DOWNLOADS VIEW (Cola de Descargas)
+// ═══════════════════════════════════════════════════════════════════
+
+async function renderDownloadsView(): Promise<string> {
+  let stats: GlobalStats = {
+    download_speed: 0,
+    upload_speed: 0,
+    ed2k_connected: false,
+    kad_connected: false,
+    kad_firewalled: false,
+    ed2k_id: "Unknown",
+    total_users: 0,
+    total_files: 0,
+  };
+
+  try {
+    stats = await api.getStats();
+  } catch (e) {
+    console.warn("Could not fetch stats:", e);
+  }
+
+  try {
+    cachedDownloads = await api.getDownloadQueue();
+  } catch (e) {
+    cachedDownloads = [];
+  }
+
+  // Update sidebar badge
+  const badgeEl = document.getElementById("badge-dl-count");
+  if (badgeEl) badgeEl.textContent = cachedDownloads.length.toString();
+
+  // Metrics Bar (Syncdrome style)
+  const metricsHtml = `
+    <div class="metrics-grid">
+      <div class="metric-card">
+        <div class="metric-header">
+          <span class="metric-label">${t("downloads.liveDownload")}</span>
+          <span class="metric-badge badge-primary">${t("status.p2p")}</span>
+        </div>
+        <div class="metric-value">▼ ${formatSpeed(stats.download_speed)}</div>
+        <div class="metric-subtext">${t("downloads.downloadSpeedSub")}</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-header">
+          <span class="metric-label">${t("downloads.liveUpload")}</span>
+          <span class="metric-badge badge-warning">${t("status.sharing")}</span>
+        </div>
+        <div class="metric-value">▲ ${formatSpeed(stats.upload_speed)}</div>
+        <div class="metric-subtext">${t("downloads.uploadSpeedSub")}</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-header">
+          <span class="metric-label">${t("downloads.queueFiles")}</span>
+          <span class="metric-badge badge-success">${cachedDownloads.length}</span>
+        </div>
+        <div class="metric-value">${cachedDownloads.length}</div>
+        <div class="metric-subtext">${t("downloads.importedFromEmule")}</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-header">
+          <span class="metric-label">${t("downloads.connectedNetworks")}</span>
+          <span class="metric-badge ${stats.ed2k_connected ? "badge-success" : "badge-warning"}">${stats.ed2k_id}</span>
+        </div>
+        <div class="metric-value" style="font-size: 15px;">
+          eD2k: ${stats.ed2k_connected ? `🟢 ${t("servers.highIdActive")}` : "🔴 Off"}
+        </div>
+        <div class="metric-subtext">Kad: ${stats.kad_connected ? (stats.kad_firewalled ? `🟡 ${t("servers.kadFirewalled")}` : `🟢 ${t("servers.kadOpen")}`) : "🔴 Off"}</div>
+      </div>
+    </div>`;
+
+  const completedCount = cachedDownloads.filter((d) => d.status === "Complete").length;
+  const filtered = cachedDownloads.filter((d) => {
+    const matchesFilter = downloadFilterQuery
+      ? d.name.toLowerCase().includes(downloadFilterQuery.toLowerCase())
+      : true;
+    const matchesCompleted = hideCompletedDownloads ? d.status !== "Complete" : true;
+    return matchesFilter && matchesCompleted;
+  });
+  const sorted = sortDownloads(filtered, downloadSortColumn, downloadSortDirection);
+
+  const tableHtml = `
+    <div class="table-container">
+      <div class="table-toolbar">
+        <div style="font-weight: 600; font-size: 13px;">${t("downloads.transferringFiles", { count: sorted.length })}</div>
+        <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+          <label class="fluent-switch-container" title="${t("downloads.hideCompletedDesc")}">
+            <span class="fluent-switch-label">${t("downloads.hideCompleted")}${completedCount > 0 ? ` (${completedCount})` : ""}</span>
+            <div class="fluent-switch">
+              <input 
+                type="checkbox" 
+                id="check-hide-completed" 
+                class="fluent-switch-input" 
+                ${hideCompletedDownloads ? "checked" : ""} 
+              />
+              <span class="fluent-switch-track">
+                <span class="fluent-switch-thumb"></span>
+              </span>
+            </div>
+          </label>
+          <button id="btn-add-ed2k" class="btn btn-primary" style="display: flex; align-items: center; gap: 6px; font-weight: 600; padding: 6px 14px; white-space: nowrap;">
+            <span>➕</span> <span>${t("downloads.addEd2kLink")}</span>
+          </button>
+          <input 
+            type="text" 
+            id="input-filter-downloads" 
+            placeholder="${t("downloads.filterPlaceholder")}" 
+            class="table-search-input" 
+            value="${downloadFilterQuery}" 
+          />
+        </div>
+      </div>
+      <table class="fluent-table">
+        <thead>
+          <tr>
+            <th class="sortable-th ${downloadSortColumn === "name" ? "sorted-" + downloadSortDirection : ""}" data-sort-dl="name" style="width: 38%;" title="Ordenar por Nombre">
+              <div class="th-content">
+                <span>${t("downloads.fileName")}</span>
+                ${renderDownloadSortIcon("name")}
+              </div>
+            </th>
+            <th class="sortable-th ${downloadSortColumn === "size" ? "sorted-" + downloadSortDirection : ""}" data-sort-dl="size" style="width: 12%;" title="Ordenar por Tamaño">
+              <div class="th-content">
+                <span>${t("downloads.fileSize")}</span>
+                ${renderDownloadSortIcon("size")}
+              </div>
+            </th>
+            <th class="sortable-th ${downloadSortColumn === "progress" ? "sorted-" + downloadSortDirection : ""}" data-sort-dl="progress" style="width: 22%;" title="Ordenar por Progreso">
+              <div class="th-content">
+                <span>${t("downloads.fileProgress")}</span>
+                ${renderDownloadSortIcon("progress")}
+              </div>
+            </th>
+            <th class="sortable-th ${downloadSortColumn === "speed" ? "sorted-" + downloadSortDirection : ""}" data-sort-dl="speed" style="width: 11%;" title="Ordenar por Velocidad">
+              <div class="th-content">
+                <span>${t("downloads.fileSpeed")}</span>
+                ${renderDownloadSortIcon("speed")}
+              </div>
+            </th>
+            <th class="sortable-th ${downloadSortColumn === "sources" ? "sorted-" + downloadSortDirection : ""}" data-sort-dl="sources" style="width: 8%;" title="Ordenar por Fuentes">
+              <div class="th-content">
+                <span>${t("downloads.fileSources")}</span>
+                ${renderDownloadSortIcon("sources")}
+              </div>
+            </th>
+            <th style="width: 14%; text-align: right;">${t("downloads.actions")}</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${
+            sorted.length === 0
+              ? `<tr><td colspan="6" style="text-align: center; padding: 36px 20px;">
+                  <div class="empty-state-logo-card">
+                    <div style="width: 56px; height: 56px; display: flex; align-items: center; justify-content: center;">
+                      ${getLogoSvg(currentLogoState, 56, "dl-empty")}
+                    </div>
+                    <h3>${(downloadFilterQuery || hideCompletedDownloads) && cachedDownloads.length > 0 ? t("downloads.emptyFilterTitle") : t("downloads.emptyQueueTitle")}</h3>
+                    <p style="margin-bottom: 8px;">${(downloadFilterQuery || hideCompletedDownloads) && cachedDownloads.length > 0 ? t("downloads.emptyFilterHelp") : t("downloads.emptyQueueHelp")}</p>
+                    ${cachedDownloads.length === 0 ? `
+                      <div style="display: flex; gap: 10px; margin-top: 10px; justify-content: center;">
+                        <button class="btn btn-primary" id="btn-empty-add-ed2k">➕ ${t("downloads.addEd2kLink")}</button>
+                        <button class="btn btn-secondary" onclick="window.navigateToView('search')">🔍 ${t("downloads.goToSearch")}</button>
+                      </div>
+                    ` : ""}
+                  </div>
+                 </td></tr>`
+              : sorted
+                  .map(
+                    (d) => `
+                <tr 
+                  class="download-row ${d.status === "Complete" ? "completed-row" : ""}" 
+                  data-hash="${d.hash}" 
+                  data-name="${encodeURIComponent(d.name)}" 
+                  data-status="${d.status}" 
+                  data-size="${d.size_total}"
+                  title="${d.status === "Complete" ? "Doble clic para lanzar | Clic derecho para opciones" : "Clic derecho para opciones"}"
+                >
+                  <td>
+                    <div class="file-title-cell">
+                      <span class="file-icon">${getFileIcon(d.name)}</span>
+                      <div class="file-info-stack">
+                        <div class="file-name-text" title="${d.name}">${d.name}</div>
+                        <div class="file-sub-meta">${t("downloads.hash")}: ${d.hash.substring(0, 12)}... | ${t("downloads.fileStatus")}: ${d.status}</div>
+                      </div>
+                    </div>
+                  </td>
+                  <td>
+                    <div style="font-weight: 500;">${formatSize(d.size_total)}</div>
+                    <div style="font-size: 11px; color: var(--text-tertiary);">${formatSize(d.size_done)}</div>
+                  </td>
+                  <td>
+                    <div class="fluent-progress-track">
+                      <div class="fluent-progress-fill ${d.status === "Complete" ? "completed" : ""}" style="width: ${(d.progress * 100).toFixed(1)}%;"></div>
+                    </div>
+                    <div class="fluent-progress-text">${(d.progress * 100).toFixed(1)}%</div>
+                  </td>
+                  <td>
+                    <span style="font-family: var(--font-mono); color: ${d.speed > 0 ? "var(--primary)" : (d.status === "Complete" ? "var(--success)" : "var(--text-tertiary)")}">
+                      ${d.status === "Downloading" ? formatSpeed(d.speed) : (d.status === "Complete" ? `✓ ${d.status}` : d.status)}
+                    </span>
+                  </td>
+                  <td>
+                    <span class="metric-badge ${d.status === "Complete" ? "badge-success" : "badge-primary"}">
+                      ${d.status === "Complete" ? "100%" : `${d.sources_transferring}/${d.sources_total}`}
+                    </span>
+                  </td>
+                  <td style="text-align: right; white-space: nowrap;">
+                    ${
+                      d.status === "Complete"
+                        ? `
+                          <button class="btn btn-primary btn-icon" data-action="launch" data-name="${encodeURIComponent(d.name)}" data-hash="${d.hash}" title="${t("contextMenu.launch")}">🚀 ${t("cleaner.launchBtn")}</button>
+                          <button class="btn btn-secondary btn-icon" data-action="show-in-folder" data-name="${encodeURIComponent(d.name)}" data-hash="${d.hash}" title="${t("contextMenu.showInFolder")}">📂</button>
+                          <button class="btn btn-secondary btn-icon" data-action="clean-rename" data-name="${encodeURIComponent(d.name)}" data-hash="${d.hash}" title="${t("contextMenu.cleanName")}">🧹</button>
+                          <button class="btn btn-danger btn-icon" data-action="delete" data-hash="${d.hash}" title="${t("common.delete")}">🗑</button>
+                        `
+                        : `
+                          ${
+                            d.status === "Paused"
+                              ? `<button class="btn btn-secondary btn-icon" data-action="resume" data-hash="${d.hash}" title="${t("common.resume")}">▶</button>`
+                              : `<button class="btn btn-secondary btn-icon" data-action="pause" data-hash="${d.hash}" title="${t("common.pause")}">⏸</button>`
+                          }
+                          <button class="btn btn-secondary btn-icon" data-action="show-in-folder" data-name="${encodeURIComponent(d.name)}" data-hash="${d.hash}" title="${t("contextMenu.showInFolder")}">📂</button>
+                          <button class="btn btn-secondary btn-icon" data-action="clean-rename" data-name="${encodeURIComponent(d.name)}" data-hash="${d.hash}" title="${t("contextMenu.cleanName")}">🧹</button>
+                          <button class="btn btn-danger btn-icon" data-action="delete" data-hash="${d.hash}" title="${t("common.delete")}">🗑</button>
+                        `
+                    }
+                  </td>
+                </tr>`
+                  )
+                  .join("")
+          }
+        </tbody>
+      </table>
+    </div>`;
+
+  return `
+    ${renderHeader(t("downloads.title"), t("downloads.subtitle"), t("nav.downloads"))}
+    ${metricsHtml}
+    ${tableHtml}`;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// 2. SERVERS VIEW (Servidores eD2K)
+// ═══════════════════════════════════════════════════════════════════
+
+async function renderServersView(): Promise<string> {
+  let servers: ServerInfo[] = [];
+  let stats: GlobalStats | null = null;
+  try {
+    servers = await api.getServerList();
+  } catch (e) {
+    servers = [];
+  }
+  try {
+    stats = await api.getStats();
+  } catch (e) {
+    stats = null;
+  }
+
+  const networkOverviewHtml = `
+    <div class="metrics-grid" style="margin-bottom: 20px;">
+      <div class="metric-card" style="display: flex; flex-direction: row; align-items: center; gap: 14px;">
+        <div style="width: 44px; height: 44px; flex-shrink: 0; display: flex; align-items: center; justify-content: center;">
+          ${getLogoSvg(currentLogoState, 42, "srv-avatar")}
+        </div>
+        <div>
+          <div class="metric-label">${t("servers.identity")}</div>
+          <div class="metric-value" style="font-size: 15px;">${stats ? stats.ed2k_id : t("status.disconnectedFromDaemon")}</div>
+          <div class="metric-hint" style="color: ${stats?.ed2k_connected ? "var(--success)" : "var(--text-tertiary)"}; font-weight: 500;">
+            ${stats?.ed2k_connected ? `🟢 ${t("servers.highIdActive")}` : `🔴 ${t("servers.waitingConnection")}`}
+          </div>
+        </div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-header">
+          <span class="metric-label">${t("servers.kadNetwork")}</span>
+          <span class="metric-badge ${stats?.kad_connected ? (stats?.kad_firewalled ? "badge-warning" : "badge-success") : "badge-secondary"}">
+            ${stats?.kad_connected ? (stats?.kad_firewalled ? t("servers.kadFirewalled") : t("servers.kadOpen")) : t("servers.kadDisconnected")}
+          </span>
+        </div>
+        <div class="metric-value" style="font-size: 15px;">
+          ${stats?.kad_connected ? (stats?.kad_firewalled ? `🟡 ${t("servers.kadFirewalled")}` : `🟢 ${t("servers.kadOpen")}`) : `🔴 ${t("servers.kadDisconnected")}`}
+        </div>
+        <div class="metric-subtext">${t("servers.udpPort")}: 6591</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-header">
+          <span class="metric-label">${t("servers.globalUsers")}</span>
+          <span class="metric-badge badge-primary">eD2k + Kad</span>
+        </div>
+        <div class="metric-value" style="font-size: 15px;">${stats ? stats.total_users.toLocaleString() : "0"}</div>
+        <div class="metric-subtext">${t("servers.filesIndexed", { count: stats ? stats.total_files.toLocaleString() : "0" })}</div>
+      </div>
+    </div>`;
+
+  const tableHtml = `
+    <div class="table-container">
+      <div class="table-toolbar">
+        <div style="font-weight: 600; font-size: 13px;">${t("servers.availableServers", { count: servers.length })}</div>
+        <button class="btn btn-primary btn-icon" id="btn-refresh-servers">🔄 ${t("servers.refreshServers")}</button>
+      </div>
+      <table class="fluent-table">
+        <thead>
+          <tr>
+            <th>${t("servers.serverName")}</th>
+            <th>${t("servers.ipPort")}</th>
+            <th>${t("servers.users")}</th>
+            <th>${t("servers.files")}</th>
+            <th style="text-align: right;">${t("servers.connection")}</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${
+            servers.length === 0
+              ? `<tr><td colspan="5" style="text-align: center; padding: 40px; color: var(--text-tertiary);">${t("servers.noServers")}</td></tr>`
+              : servers
+                  .map(
+                    (s) => `
+                <tr class="${s.is_connected ? "active-row" : ""}">
+                  <td>
+                    <div style="font-weight: 600; display: flex; align-items: center; gap: 8px;">
+                      <span class="status-dot ${s.is_connected ? "" : "stopped"}"></span>
+                      ${s.name}
+                    </div>
+                  </td>
+                  <td style="font-family: var(--font-mono);">${s.ip}:${s.port}</td>
+                  <td>${s.users.toLocaleString()}</td>
+                  <td>${s.files.toLocaleString()}</td>
+                  <td style="text-align: right;">
+                    ${
+                      s.is_connected
+                        ? `<button class="btn btn-secondary btn-icon" data-action="disconnect-server">${t("common.disconnect")}</button>`
+                        : `<button class="btn btn-primary btn-icon" data-action="connect-server" data-ip="${s.ip}" data-port="${s.port}">${t("common.connect")}</button>`
+                    }
+                  </td>
+                </tr>`
+                  )
+                  .join("")
+          }
+        </tbody>
+      </table>
+    </div>`;
+
+  return `
+    ${renderHeader(t("servers.title"), t("servers.subtitle"), t("nav.servers"))}
+    ${networkOverviewHtml}
+    ${tableHtml}`;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// 3. SEARCH VIEW (Búsqueda)
+// ═══════════════════════════════════════════════════════════════════
+
+function renderSearchResultsTable(results: SearchResult[], query: string): string {
+  if (results.length === 0) {
+    return `
+      <div class="table-container">
+        <div style="padding: 40px; text-align: center; color: var(--text-tertiary);">
+          ${t("search.noResults", { query })}
+        </div>
+      </div>`;
+  }
+
+  const sorted = sortSearchResults(results, searchSortColumn, searchSortDirection);
+
+  return `
+    <div class="table-container">
+      <div class="table-toolbar">
+        <div style="font-weight: 600; font-size: 13px;">
+          ${t("search.resultsCount", { count: sorted.length, query })}
+        </div>
+      </div>
+      <table class="fluent-table">
+        <thead>
+          <tr>
+            <th class="sortable-th ${searchSortColumn === "name" ? "sorted-" + searchSortDirection : ""}" data-sort-search="name" title="Ordenar por Nombre">
+              <div class="th-content">
+                <span>${t("downloads.fileName")}</span>
+                ${renderSearchSortIcon("name")}
+              </div>
+            </th>
+            <th class="sortable-th ${searchSortColumn === "size" ? "sorted-" + searchSortDirection : ""}" data-sort-search="size" title="Ordenar por Tamaño">
+              <div class="th-content">
+                <span>${t("downloads.fileSize")}</span>
+                ${renderSearchSortIcon("size")}
+              </div>
+            </th>
+            <th class="sortable-th ${searchSortColumn === "sources" ? "sorted-" + searchSortDirection : ""}" data-sort-search="sources" title="Ordenar por Fuentes">
+              <div class="th-content">
+                <span>${t("downloads.fileSources")}</span>
+                ${renderSearchSortIcon("sources")}
+              </div>
+            </th>
+            <th class="sortable-th ${searchSortColumn === "file_type" ? "sorted-" + searchSortDirection : ""}" data-sort-search="file_type" title="Ordenar por Tipo">
+              <div class="th-content">
+                <span>${t("downloads.fileStatus")}</span>
+                ${renderSearchSortIcon("file_type")}
+              </div>
+            </th>
+            <th style="text-align: right;">${t("downloads.actions")}</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${sorted
+            .map(
+              (r) => `
+            <tr 
+              class="search-result-row" 
+              data-hash="${r.hash}" 
+              data-name="${encodeURIComponent(r.name)}" 
+              data-size="${r.size}"
+              title="Clic derecho para opciones de descarga"
+            >
+              <td>
+                <div class="file-title-cell">
+                  <span class="file-icon">${getFileIcon(r.name)}</span>
+                  <span class="file-name-text" title="${r.name}">${r.name}</span>
+                </div>
+              </td>
+              <td>${formatSize(r.size)}</td>
+              <td><span class="metric-badge badge-primary">${t("search.sourcesBadge", { count: r.sources })}</span></td>
+              <td>${r.file_type}</td>
+              <td style="text-align: right; white-space: nowrap;">
+                <button class="btn btn-secondary btn-icon" data-action="clean-download" data-hash="${r.hash}" data-name="${encodeURIComponent(r.name)}" title="${t("cleaner.title")}">🧹 ${t("cleaner.cleanBtn")}</button>
+                <button class="btn btn-primary btn-icon" data-action="download" data-hash="${r.hash}">⬇ ${t("search.downloadAction")}</button>
+              </td>
+            </tr>`
+            )
+            .join("")}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+function renderSearchView(): string {
+  const activeTab = getActiveTab();
+  const currentQuery = activeTab ? activeTab.query : "";
+  const currentSearchType = activeTab ? activeTab.searchType : "Global";
+  const currentFileType = activeTab ? (activeTab.fileType || "") : "";
+
+  // 1. History chips HTML
+  const historyHtml = `
+    <div class="search-history-container">
+      <div class="search-history-header">
+        <span class="search-history-title">⏱️ ${t("search.recentSearches")}</span>
+        ${
+          searchHistory.length > 0
+            ? `<button type="button" class="btn-clear-all-history" id="btn-clear-all-history" title="${t("search.clearHistory")}">
+                 🗑️ ${t("search.clearHistory")}
+               </button>`
+            : ""
+        }
+      </div>
+      <div class="search-history-chips">
+        ${
+          searchHistory.length === 0
+            ? `<span class="search-history-empty">${t("search.noHistory")}</span>`
+            : searchHistory
+                .map(
+                  (item) => `
+              <div class="history-chip" title="${item.query}">
+                <span class="history-chip-text" data-action="run-history-query" data-query="${encodeURIComponent(item.query)}">
+                  🔍 ${item.query}
+                </span>
+                <button 
+                  type="button" 
+                  class="history-chip-delete" 
+                  data-delete-history="${encodeURIComponent(item.query)}" 
+                  title="${t("search.deleteSearch")}"
+                >
+                  ✕
+                </button>
+              </div>`
+                )
+                .join("")
+        }
+      </div>
+    </div>`;
+
+  // 2. Tabs Bar HTML
+  const tabsHtml =
+    searchTabs.length > 0
+      ? `
+    <div class="search-tabs-container">
+      <div class="search-tabs-scroll">
+        ${searchTabs
+          .map(
+            (tab) => `
+          <div 
+            class="search-tab ${tab.id === activeSearchTabId ? "active" : ""}" 
+            data-tab-id="${tab.id}"
+            title="${tab.query} (${tab.results.length} resultados)"
+          >
+            <span class="search-tab-icon ${tab.isSearching ? "spinning" : ""}">${tab.isSearching ? "🔄" : "🔍"}</span>
+            <span class="search-tab-title">${tab.query}</span>
+            <span class="search-tab-badge ${tab.results.length > 0 ? "has-results" : ""}">${tab.isSearching ? "..." : tab.results.length}</span>
+            <button class="search-tab-close" data-close-tab="${tab.id}" title="${t("search.closeTab")}">✕</button>
+          </div>`
+          )
+          .join("")}
+      </div>
+      <button class="search-tab-new-btn" id="btn-new-search-tab" title="${t("search.newTab")}">➕ ${t("search.newTab")}</button>
+    </div>`
+      : "";
+
+  // 3. Results Area HTML
+  let resultsAreaHtml = "";
+  if (activeTab) {
+    if (activeTab.isSearching && activeTab.results.length === 0) {
+      resultsAreaHtml = `
+        <div class="table-container">
+          <div style="padding: 40px; text-align: center; color: var(--accent);">
+            <div style="font-size: 28px; margin-bottom: 12px; animation: spinTab 1.5s linear infinite; display: inline-block;">🔍</div>
+            <div style="font-weight: 500;">${t("search.searching")} "${activeTab.query}"...</div>
+          </div>
+        </div>`;
+    } else if (activeTab.results.length > 0) {
+      resultsAreaHtml = renderSearchResultsTable(activeTab.results, activeTab.query);
+    } else if (!activeTab.isSearching) {
+      resultsAreaHtml = `
+        <div class="table-container">
+          <div style="padding: 40px; text-align: center; color: var(--text-tertiary);">
+            <div style="font-size: 24px; margin-bottom: 8px;">📂</div>
+            <div>${t("search.noResults", { query: activeTab.query })}</div>
+          </div>
+        </div>`;
+    }
+  } else {
+    resultsAreaHtml = `
+      <div class="table-container">
+        <div style="padding: 40px; text-align: center; color: var(--text-tertiary);">
+          <div style="font-size: 24px; margin-bottom: 8px;">🌐</div>
+          <div>${t("search.searchPrompt")}</div>
+        </div>
+      </div>`;
+  }
+
+  return `
+    ${renderHeader(t("search.title"), t("search.subtitle"), t("nav.search"))}
+    <div class="search-hero">
+      <form id="search-form" class="search-input-group">
+        <input 
+          type="text" 
+          id="search-query" 
+          placeholder="${t("search.queryPlaceholder")}" 
+          class="search-main-input" 
+          value="${currentQuery}"
+          required 
+        />
+        <select id="search-type" class="search-select-box">
+          <option value="Global" ${currentSearchType === "Global" ? "selected" : ""}>${t("search.typeGlobal")}</option>
+          <option value="Kad" ${currentSearchType === "Kad" ? "selected" : ""}>${t("search.typeKad")}</option>
+          <option value="Local" ${currentSearchType === "Local" ? "selected" : ""}>${t("search.typeLocal")}</option>
+        </select>
+        <select id="search-filetype" class="search-select-box">
+          <option value="" ${currentFileType === "" ? "selected" : ""}>${t("search.typeAny")}</option>
+          <option value="Video" ${currentFileType === "Video" ? "selected" : ""}>${t("search.typeVideo")}</option>
+          <option value="Audio" ${currentFileType === "Audio" ? "selected" : ""}>${t("search.typeAudio")}</option>
+          <option value="Archive" ${currentFileType === "Archive" ? "selected" : ""}>${t("search.typeArchive")}</option>
+          <option value="Program" ${currentFileType === "Program" ? "selected" : ""}>${t("search.typeProgram")}</option>
+          <option value="Doc" ${currentFileType === "Doc" ? "selected" : ""}>${t("search.typeDoc")}</option>
+        </select>
+        <button type="submit" class="btn btn-primary">🔍 ${t("search.searchButton")}</button>
+        <button type="button" id="btn-stop-search" class="btn btn-secondary">${t("search.stopButton")}</button>
+      </form>
+      ${historyHtml}
+    </div>
+    ${tabsHtml}
+    <div id="search-results-area">
+      ${resultsAreaHtml}
+    </div>`;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// 4. UPLOADS VIEW (Subidas)
+// ═══════════════════════════════════════════════════════════════════
+
+async function renderUploadsView(): Promise<string> {
+  let uploads: UploadInfo[] = [];
+  try {
+    uploads = await api.getUploadQueue();
+  } catch (e) {
+    uploads = [];
+  }
+
+  const tableHtml = `
+    <div class="table-container">
+      <div class="table-toolbar">
+        <div style="font-weight: 600; font-size: 13px;">${t("uploads.clientsUploading", { count: uploads.length })}</div>
+      </div>
+      <table class="fluent-table">
+        <thead>
+          <tr>
+            <th>${t("uploads.sharedFile")}</th>
+            <th>${t("uploads.remoteClient")}</th>
+            <th>${t("uploads.uploadSpeed")}</th>
+            <th>${t("uploads.totalTransferred")}</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${
+            uploads.length === 0
+              ? `<tr><td colspan="4" style="text-align: center; padding: 40px; color: var(--text-tertiary);">${t("uploads.noUploads")}</td></tr>`
+              : uploads
+                  .map(
+                    (u) => `
+                <tr>
+                  <td>
+                    <div class="file-title-cell">
+                      <span class="file-icon">${getFileIcon(u.name)}</span>
+                      <span class="file-name-text">${u.name}</span>
+                    </div>
+                  </td>
+                  <td>${u.client_name}</td>
+                  <td style="font-family: var(--font-mono); color: var(--warning);">▲ ${formatSpeed(u.speed)}</td>
+                  <td>${formatSize(u.transferred)}</td>
+                </tr>`
+                  )
+                  .join("")
+          }
+        </tbody>
+      </table>
+    </div>`;
+
+  return `
+    ${renderHeader(t("uploads.title"), t("uploads.subtitle"), t("nav.uploads"))}
+    ${tableHtml}`;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// 5. SETTINGS VIEW (Configuración e Importación + Apariencia & Idioma)
+// ═══════════════════════════════════════════════════════════════════
+
+function renderSettingsView(): string {
+  const currentTheme = ThemeManager.getColorScheme();
+  const currentLang = I18nManager.getLanguageSetting();
+
+  return `
+    ${renderHeader(t("settings.title"), t("settings.subtitle"), t("nav.settings"))}
+    
+    <!-- Appearance & Language Configuration Card (Syncdrome style) -->
+    <div class="table-container" style="padding: 24px; max-width: 850px; margin-bottom: 20px;">
+      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px; margin-bottom: 16px;">
+        <div>
+          <h3 style="font-size: 16px; font-weight: 700; margin: 0; display: flex; align-items: center; gap: 8px;">
+            <span>🎨</span>
+            <span>${t("settings.appearanceTitle")}</span>
+          </h3>
+          <p style="color: var(--text-secondary); font-size: 12px; margin-top: 4px; margin-bottom: 0;">
+            ${t("settings.appearanceHint")}
+          </p>
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px;">
+        <!-- Theme Selection -->
+        <div class="metric-card" style="padding: 16px;">
+          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+            <span style="font-size: 16px;">🌓</span>
+            <span style="font-weight: 600; font-size: 13px;">${t("settings.appearance")}</span>
+          </div>
+          <select id="select-theme" class="settings-select" style="width: 100%;">
+            <option value="system" ${currentTheme === "system" ? "selected" : ""}>💻 ${t("settings.themeSystem")}</option>
+            <option value="light" ${currentTheme === "light" ? "selected" : ""}>☀️ ${t("settings.themeLight")}</option>
+            <option value="dark" ${currentTheme === "dark" ? "selected" : ""}>🌙 ${t("settings.themeDark")}</option>
+          </select>
+        </div>
+
+        <!-- Language Selection -->
+        <div class="metric-card" style="padding: 16px;">
+          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+            <span style="font-size: 16px;">🌐</span>
+            <span style="font-weight: 600; font-size: 13px;">${t("settings.language")}</span>
+          </div>
+          <select id="select-language" class="settings-select" style="width: 100%;">
+            <option value="system" ${currentLang === "system" ? "selected" : ""}>💻 ${t("settings.themeSystem")}</option>
+            <option value="es" ${currentLang === "es" ? "selected" : ""}>🇪🇸 Español</option>
+            <option value="en" ${currentLang === "en" ? "selected" : ""}>🇬🇧 English</option>
+            <option value="fr" ${currentLang === "fr" ? "selected" : ""}>🇫🇷 Français</option>
+            <option value="de" ${currentLang === "de" ? "selected" : ""}>🇩🇪 Deutsch</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Branding & Logo States Showcase Card -->
+    <div class="table-container" style="padding: 24px; max-width: 850px; margin-bottom: 20px;">
+      <div style="display: flex; gap: 24px; align-items: center; flex-wrap: wrap; margin-bottom: 20px;">
+        <div id="settings-logo-preview" style="width: 84px; height: 84px; flex-shrink: 0; display: flex; align-items: center; justify-content: center;">
+          ${getLogoSvg(currentLogoState, 84, "settings-preview")}
+        </div>
+        <div style="flex: 1; min-width: 260px;">
+          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 6px;">
+            <h3 style="font-size: 17px; font-weight: 700; margin: 0;">${t("settings.logoTitle")}</h3>
+            <span class="brand-badge state-${currentLogoState}" id="settings-badge">${getLocalizedLogoLabel(currentLogoState)}</span>
+          </div>
+          <p style="color: var(--text-secondary); font-size: 12.5px; line-height: 1.5; margin-bottom: 0;">
+            ${t("settings.logoDesc")}
+          </p>
+        </div>
+      </div>
+
+      <div style="border-top: 1px solid var(--border-subtle); padding-top: 16px;">
+        <div style="font-size: 11px; font-weight: 600; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px;">
+          ${t("settings.logoGallery")}
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px;">
+          <div class="metric-card" style="padding: 12px; cursor: pointer; border: 1px solid ${currentLogoState === "connected" ? "#60cdff" : "var(--border-subtle)"};" data-test-state="connected">
+            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+              <div style="width: 36px; height: 36px; flex-shrink: 0;">${getLogoSvg("connected", 36, "card-conn")}</div>
+              <div>
+                <div style="font-weight: 600; font-size: 12px; color: #60cdff;">${t("settings.cardConnectedTitle")}</div>
+                <div style="font-size: 10px; color: var(--text-tertiary);">${t("settings.cardConnectedSub")}</div>
+              </div>
+            </div>
+            <button class="btn btn-secondary btn-sm" style="width: 100%;">${t("settings.testBlue")}</button>
+          </div>
+
+          <div class="metric-card" style="padding: 12px; cursor: pointer; border: 1px solid ${currentLogoState === "downloading" ? "#6ccb5f" : "var(--border-subtle)"};" data-test-state="downloading">
+            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+              <div style="width: 36px; height: 36px; flex-shrink: 0;">${getLogoSvg("downloading", 36, "card-dl")}</div>
+              <div>
+                <div style="font-weight: 600; font-size: 12px; color: #6ccb5f;">${t("settings.cardDownloadingTitle")}</div>
+                <div style="font-size: 10px; color: var(--text-tertiary);">${t("settings.cardDownloadingSub")}</div>
+              </div>
+            </div>
+            <button class="btn btn-secondary btn-sm" style="width: 100%;">${t("settings.testGreen")}</button>
+          </div>
+
+          <div class="metric-card" style="padding: 12px; cursor: pointer; border: 1px solid ${currentLogoState === "warning" ? "#ffe066" : "var(--border-subtle)"};" data-test-state="warning">
+            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+              <div style="width: 36px; height: 36px; flex-shrink: 0;">${getLogoSvg("warning", 36, "card-warn")}</div>
+              <div>
+                <div style="font-weight: 600; font-size: 12px; color: #ffe066;">${t("settings.cardWarningTitle")}</div>
+                <div style="font-size: 10px; color: var(--text-tertiary);">${t("settings.cardWarningSub")}</div>
+              </div>
+            </div>
+            <button class="btn btn-secondary btn-sm" style="width: 100%;">${t("settings.testAmber")}</button>
+          </div>
+
+          <div class="metric-card" style="padding: 12px; cursor: pointer; border: 1px solid ${currentLogoState === "idle" ? "#adadad" : "var(--border-subtle)"};" data-test-state="idle">
+            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+              <div style="width: 36px; height: 36px; flex-shrink: 0;">${getLogoSvg("idle", 36, "card-idle")}</div>
+              <div>
+                <div style="font-weight: 600; font-size: 12px; color: #adadad;">${t("settings.cardIdleTitle")}</div>
+                <div style="font-size: 10px; color: var(--text-tertiary);">${t("settings.cardIdleSub")}</div>
+              </div>
+            </div>
+            <button class="btn btn-secondary btn-sm" style="width: 100%;">${t("settings.testGray")}</button>
+          </div>
+        </div>
+
+        <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
+          <div id="state-feedback" style="font-size: 12px; color: var(--text-secondary); font-family: var(--font-mono);">
+            ${t("settings.currentMode", {
+              mode: manualLogoOverride
+                ? t("settings.modeManual", { state: getLocalizedLogoLabel(manualLogoOverride) })
+                : t("settings.modeAuto", { state: getLocalizedLogoLabel(currentLogoState) }),
+            })}
+          </div>
+          <button class="btn btn-primary" data-test-state="auto">🔄 ${t("settings.resetAuto")}</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Active eMule Configuration Parameters -->
+    <div class="table-container" style="padding: 24px; max-width: 850px;">
+      <h3 style="margin-bottom: 16px; font-size: 16px;">${t("settings.emuleParamsTitle")}</h3>
+      
+      <div style="display: grid; grid-template-columns: 200px 1fr; gap: 12px; margin-bottom: 24px; font-size: 13px;">
+        <span style="color: var(--text-secondary);">${t("settings.tempDir")}</span>
+        <span style="font-family: var(--font-mono);">C:\\Users\\Windows\\Downloads\\eMule\\Temp\\</span>
+
+        <span style="color: var(--text-secondary);">${t("settings.incomingDir")}</span>
+        <span style="font-family: var(--font-mono);">D:\\Backup\\Pendiente\\</span>
+
+        <span style="color: var(--text-secondary);">${t("settings.tcpPort")}</span>
+        <span><strong style="color: #6ccb5f;">19644</strong> (${t("settings.highIdRouter")})</span>
+
+        <span style="color: var(--text-secondary);">${t("settings.udpPort")}</span>
+        <span><strong style="color: #6ccb5f;">6591</strong> (${t("settings.noFirewall")})</span>
+
+        <span style="color: var(--text-secondary);">${t("settings.limits")}</span>
+        <span>800 KB/s / 800 KB/s</span>
+
+        <span style="color: var(--text-secondary);">${t("settings.ecPort")}</span>
+        <span style="font-family: var(--font-mono);">TCP 4712 (Localhost)</span>
+      </div>
+
+      <div style="border-top: 1px solid var(--border-subtle); padding-top: 18px;">
+        <h4 style="margin-bottom: 8px;">${t("settings.syncTitle")}</h4>
+        <p style="color: var(--text-secondary); margin-bottom: 16px; font-size: 12px;">
+          ${t("settings.syncDesc")}
+        </p>
+        <button class="btn btn-primary" id="btn-sync-emule">
+          🔄 ${t("settings.syncButton")}
+        </button>
+        <span id="sync-feedback" style="margin-left: 12px; font-size: 12px; color: #6ccb5f;"></span>
+      </div>
+    </div>`;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Event Listeners & Interaction
+// ═══════════════════════════════════════════════════════════════════
+
+function attachEventListeners() {
+  // Breadcrumb navigation
+  document.querySelectorAll("[data-nav]").forEach((el) => {
+    el.addEventListener("click", () => navigate("downloads"));
+  });
+
+  // Checkbox: Hide completed downloads
+  const checkHideCompleted = document.getElementById("check-hide-completed") as HTMLInputElement | null;
+  checkHideCompleted?.addEventListener("change", (e) => {
+    hideCompletedDownloads = (e.target as HTMLInputElement).checked;
+    localStorage.setItem("taurimule_hide_completed", hideCompletedDownloads ? "true" : "false");
+    renderView();
+  });
+
+  // Filter downloads input
+  const filterInput = document.getElementById("input-filter-downloads") as HTMLInputElement | null;
+  if (filterInput) {
+    filterInput.addEventListener("input", (e) => {
+      downloadFilterQuery = (e.target as HTMLInputElement).value;
+      renderView();
+      const updatedInput = document.getElementById("input-filter-downloads") as HTMLInputElement | null;
+      if (updatedInput) {
+        updatedInput.focus();
+        updatedInput.setSelectionRange(updatedInput.value.length, updatedInput.value.length);
+      }
+    });
+  }
+
+  // Toggle daemon (start/stop)
+  document.getElementById("btn-toggle-daemon")?.addEventListener("click", async () => {
+    try {
+      if (currentDaemonStatus?.running) {
+        await api.stopDaemon();
+      } else {
+        await api.startDaemon();
+      }
+      setTimeout(() => renderView(), 800);
+    } catch (e) {
+      console.error("Failed to toggle daemon:", e);
+    }
+  });
+
+  // Re-import eMule button
+  document.getElementById("btn-sync-emule")?.addEventListener("click", async () => {
+    const feedback = document.getElementById("sync-feedback");
+    if (feedback) feedback.textContent = t("settings.syncing");
+    setTimeout(() => {
+      if (feedback) feedback.textContent = t("settings.syncSuccess");
+      renderView();
+    }, 800);
+  });
+
+  // Theme select in Settings
+  document.getElementById("select-theme")?.addEventListener("change", (e) => {
+    const val = (e.target as HTMLSelectElement).value as ColorScheme;
+    ThemeManager.setColorScheme(val);
+    renderAppShell();
+    renderView();
+  });
+
+  // Language select in Settings
+  document.getElementById("select-language")?.addEventListener("change", (e) => {
+    const val = (e.target as HTMLSelectElement).value as LanguageSetting;
+    I18nManager.setLanguage(val);
+  });
+
+  // State tester buttons (logo showcase)
+  document.querySelectorAll("[data-test-state]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      const state = (e.currentTarget as HTMLElement).dataset.testState;
+      if (state === "auto") {
+        manualLogoOverride = null;
+      } else if (state === "connected" || state === "downloading" || state === "warning" || state === "idle") {
+        manualLogoOverride = state;
+        updateAppLogo(state);
+      }
+      renderView();
+    });
+  });
+
+  // Paste / Add eD2k Link buttons
+  document.getElementById("btn-add-ed2k")?.addEventListener("click", () => openAddEd2kModalWithClipboardCheck());
+  document.getElementById("btn-empty-add-ed2k")?.addEventListener("click", () => openAddEd2kModalWithClipboardCheck());
+
+  // Sortable column headers in Downloads
+  document.querySelectorAll("[data-sort-dl]").forEach((th) => {
+    th.addEventListener("click", (e) => {
+      const col = (e.currentTarget as HTMLElement).dataset.sortDl as DownloadSortColumn;
+      if (!col) return;
+      if (downloadSortColumn === col) {
+        downloadSortDirection = downloadSortDirection === "asc" ? "desc" : "asc";
+      } else {
+        downloadSortColumn = col;
+        downloadSortDirection = col === "name" ? "asc" : "desc";
+      }
+      renderView();
+    });
+  });
+
+  // Refresh servers
+  document.getElementById("btn-refresh-servers")?.addEventListener("click", () => renderView());
+
+  // Search tab selection
+  document.querySelectorAll(".search-tab").forEach((tabEl) => {
+    tabEl.addEventListener("click", (e) => {
+      const target = e.target as HTMLElement;
+      if (target.classList.contains("search-tab-close")) return;
+      const tabId = (tabEl as HTMLElement).dataset.tabId;
+      if (tabId && tabId !== activeSearchTabId) {
+        activeSearchTabId = tabId;
+        renderView();
+      }
+    });
+  });
+
+  // Search tab close button
+  document.querySelectorAll("[data-close-tab]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const tabId = (btn as HTMLElement).dataset.closeTab;
+      if (tabId) {
+        closeSearchTab(tabId);
+        renderView();
+      }
+    });
+  });
+
+  // Search new tab button
+  document.getElementById("btn-new-search-tab")?.addEventListener("click", () => {
+    const input = document.getElementById("search-query") as HTMLInputElement;
+    if (input) {
+      input.value = "";
+      input.focus();
+    }
+  });
+
+  // Delete individual search from memory
+  document.querySelectorAll("[data-delete-history]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const q = decodeURIComponent((btn as HTMLElement).dataset.deleteHistory || "");
+      if (q) {
+        removeFromSearchHistory(q);
+        renderView();
+      }
+    });
+  });
+
+  // Clear all search history
+  document.getElementById("btn-clear-all-history")?.addEventListener("click", () => {
+    clearAllSearchHistory();
+    renderView();
+  });
+
+  // Click history chip text to execute search / switch to tab
+  document.querySelectorAll("[data-action='run-history-query']").forEach((chipText) => {
+    chipText.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const query = decodeURIComponent((chipText as HTMLElement).dataset.query || "");
+      if (!query) return;
+
+      const existingTab = searchTabs.find((t) => t.query.toLowerCase() === query.toLowerCase());
+      if (existingTab) {
+        activeSearchTabId = existingTab.id;
+        renderView();
+        return;
+      }
+
+      const searchType = (document.getElementById("search-type") as HTMLSelectElement)?.value as any || "Global";
+      const fileType = (document.getElementById("search-filetype") as HTMLSelectElement)?.value || undefined;
+      addToSearchHistory(query, searchType, fileType);
+      const tab = createOrActivateSearchTab(query, searchType, fileType);
+      tab.isSearching = true;
+      renderView();
+
+      try {
+        await api.startSearch({ query, search_type: searchType, file_type: fileType });
+        const fetchResults = async () => {
+          try {
+            const results = await api.getSearchResults();
+            tab.results = results;
+            tab.isSearching = false;
+            if (currentView === "search" && activeSearchTabId === tab.id) {
+              renderView();
+            }
+          } catch {
+            tab.isSearching = false;
+            if (currentView === "search" && activeSearchTabId === tab.id) {
+              renderView();
+            }
+          }
+        };
+        setTimeout(fetchResults, 350);
+        setTimeout(fetchResults, 900);
+        setTimeout(fetchResults, 2000);
+      } catch (err) {
+        tab.isSearching = false;
+        renderView();
+      }
+    });
+  });
+
+  // Sortable column headers in Search Results
+  document.querySelectorAll("[data-sort-search]").forEach((th) => {
+    th.addEventListener("click", (e) => {
+      const col = (e.currentTarget as HTMLElement).dataset.sortSearch as SearchSortColumn;
+      if (!col) return;
+      if (searchSortColumn === col) {
+        searchSortDirection = searchSortDirection === "asc" ? "desc" : "asc";
+      } else {
+        searchSortColumn = col;
+        searchSortDirection = col === "name" || col === "file_type" ? "asc" : "desc";
+      }
+      renderView();
+    });
+  });
+
+  // Search form submit
+  document.getElementById("search-form")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const queryInput = document.getElementById("search-query") as HTMLInputElement;
+    const query = queryInput ? queryInput.value.trim() : "";
+    if (!query) return;
+
+    // Detect if query is an eD2k link
+    if (query.startsWith("ed2k://") || query.includes("ed2k://|file|")) {
+      showAddEd2kModal(query);
+      return;
+    }
+
+    const searchType = (document.getElementById("search-type") as HTMLSelectElement)?.value as any || "Global";
+    const fileType = (document.getElementById("search-filetype") as HTMLSelectElement)?.value || undefined;
+
+    addToSearchHistory(query, searchType, fileType);
+    const tab = createOrActivateSearchTab(query, searchType, fileType);
+    tab.isSearching = true;
+    renderView();
+
+    try {
+      await api.startSearch({ query, search_type: searchType, file_type: fileType });
+
+      // Poll search results at 350ms, 900ms, and 2000ms
+      const fetchResults = async () => {
+        try {
+          const results = await api.getSearchResults();
+          tab.results = results;
+          tab.isSearching = false;
+          if (currentView === "search" && activeSearchTabId === tab.id) {
+            renderView();
+          }
+        } catch (err) {
+          tab.isSearching = false;
+          if (currentView === "search" && activeSearchTabId === tab.id) {
+            renderView();
+          }
+        }
+      };
+
+      setTimeout(fetchResults, 350);
+      setTimeout(fetchResults, 900);
+      setTimeout(fetchResults, 2000);
+    } catch (err) {
+      tab.isSearching = false;
+      if (currentView === "search" && activeSearchTabId === tab.id) {
+        renderView();
+      }
+    }
+  });
+
+  document.getElementById("btn-stop-search")?.addEventListener("click", async () => {
+    try {
+      await api.stopSearch();
+      const activeTab = getActiveTab();
+      if (activeTab) {
+        activeTab.isSearching = false;
+      }
+      showToast("⏹ Búsqueda detenida");
+      renderView();
+    } catch (e) {
+      console.warn("Stop search error:", e);
+    }
+  });
+
+  // Action Delegation
+  document.querySelectorAll("[data-action]").forEach((btn) => {
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const target = e.currentTarget as HTMLElement;
+      const action = target.dataset.action;
+      const hash = target.dataset.hash;
+      try {
+        switch (action) {
+          case "download":
+            await api.downloadFile(hash!);
+            navigate("downloads");
+            break;
+          case "clean-download": {
+            const rawName = safeDecode(target.dataset.name);
+            if (rawName && hash) {
+              showFilenameCleanModal(rawName, "download", async (cleanName) => {
+                try {
+                  await api.downloadFile(hash);
+                  if (cleanName && cleanName !== rawName) {
+                    setTimeout(async () => {
+                      try {
+                        await api.renameFile(hash, cleanName, rawName);
+                      } catch (e) {
+                        console.warn("Could not auto-rename download:", e);
+                      }
+                    }, 350);
+                  }
+                  showToast(`⬇ ${t("downloads.title")}: ${cleanName || rawName}`);
+                  navigate("downloads");
+                } catch (err) {
+                  showToast(`⚠️ ${err}`);
+                }
+              });
+            }
+            break;
+          }
+          case "launch": {
+            const rawName = safeDecode(target.dataset.name);
+            const fileHash = target.dataset.hash || hash || "";
+            if (rawName || fileHash) {
+              try {
+                await api.launchFile(rawName, fileHash);
+                showToast(`🚀 ${t("cleaner.launchSuccess")}`);
+              } catch (err) {
+                showToast(`⚠️ ${err}`);
+              }
+            }
+            break;
+          }
+          case "show-in-folder": {
+            const rawName = safeDecode(target.dataset.name);
+            const fileHash = target.dataset.hash || hash || "";
+            await api.showInFolder(rawName, fileHash);
+            break;
+          }
+          case "clean-rename": {
+            const rawName = safeDecode(target.dataset.name);
+            const fileHash = target.dataset.hash || hash || "";
+            if (fileHash && rawName) {
+              showFilenameCleanModal(rawName, "rename", async (cleanName) => {
+                try {
+                  await api.renameFile(fileHash, cleanName, rawName);
+                  showToast(`✏️ Renombrado en eMule: ${cleanName}`);
+                  await renderView();
+                } catch (err) {
+                  showToast(`⚠️ ${err}`);
+                }
+              });
+            }
+            break;
+          }
+          case "pause":
+            await api.pauseDownload(hash!);
+            renderView();
+            break;
+          case "resume":
+            await api.resumeDownload(hash!);
+            renderView();
+            break;
+          case "delete":
+            if (confirm(t("downloads.confirmDelete"))) {
+              await api.deleteDownload(hash!);
+              renderView();
+            }
+            break;
+          case "connect-server":
+            await api.connectServer(target.dataset.ip!, parseInt(target.dataset.port!));
+            renderView();
+            break;
+          case "disconnect-server":
+            await api.disconnectServer();
+            renderView();
+            break;
+        }
+      } catch (err) {
+        console.error("Action error:", action, err);
+      }
+    });
+  });
+
+  // Right-click & Double-click on Download Rows (Syncdrome Context Menu)
+  document.querySelectorAll(".download-row").forEach((row) => {
+    const el = row as HTMLElement;
+    const name = safeDecode(el.dataset.name);
+    const hash = el.dataset.hash || "";
+    const status = el.dataset.status || "";
+    const size = parseInt(el.dataset.size || "0");
+
+    // Double-click to launch if Complete, or show in folder
+    el.addEventListener("dblclick", async (e) => {
+      e.preventDefault();
+      if (status === "Complete") {
+        try {
+          await api.launchFile(name, hash);
+          showToast(`🚀 ${t("cleaner.launchSuccess")}`);
+        } catch (err) {
+          showToast(`⚠️ ${err}`);
+        }
+      } else {
+        await api.showInFolder(name, hash);
+      }
+    });
+
+    // Right-click Context Menu
+    el.addEventListener("contextmenu", (e: MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const items: ContextMenuItem[] = [
+        {
+          label: t("contextMenu.launch"),
+          icon: "🚀",
+          onClick: async () => {
+            try {
+              await api.launchFile(name, hash);
+              showToast(`🚀 ${t("cleaner.launchSuccess")}`);
+            } catch (err) {
+              showToast(`⚠️ ${err}`);
+            }
+          },
+        },
+        {
+          label: t("contextMenu.showInFolder"),
+          icon: "📂",
+          onClick: async () => {
+            await api.showInFolder(name, hash);
+          },
+        },
+        status === "Paused"
+          ? {
+              label: t("contextMenu.resume"),
+              icon: "▶️",
+              onClick: async () => {
+                await api.resumeDownload(hash);
+                renderView();
+              },
+            }
+          : {
+              label: t("contextMenu.pause"),
+              icon: "⏸️",
+              onClick: async () => {
+                await api.pauseDownload(hash);
+                renderView();
+              },
+            },
+        {
+          label: t("contextMenu.cleanName"),
+          icon: "🧹",
+          onClick: () => {
+            showFilenameCleanModal(name, "rename", async (cleanName) => {
+              try {
+                await api.renameFile(hash, cleanName, name);
+                showToast(`✏️ Renombrado en eMule: ${cleanName}`);
+                await renderView();
+              } catch (err) {
+                showToast(`⚠️ ${err}`);
+              }
+            });
+          },
+        },
+        "divider",
+        {
+          label: t("contextMenu.copyEd2k"),
+          icon: "📋",
+          onClick: async () => {
+            const ed2kLink = `ed2k://|file|${name}|${size}|${hash}|/`;
+            try {
+              await navigator.clipboard.writeText(ed2kLink);
+              showToast(`📋 ${t("cleaner.copied")}`);
+            } catch {
+              showToast(ed2kLink);
+            }
+          },
+        },
+        {
+          label: t("contextMenu.copyHash"),
+          icon: "🔑",
+          onClick: async () => {
+            try {
+              await navigator.clipboard.writeText(hash);
+              showToast(`🔑 Hash copiado`);
+            } catch {
+              showToast(hash);
+            }
+          },
+        },
+        "divider",
+        {
+          label: t("contextMenu.delete"),
+          icon: "🗑️",
+          danger: true,
+          onClick: async () => {
+            if (confirm(t("downloads.confirmDelete"))) {
+              await api.deleteDownload(hash);
+              renderView();
+            }
+          },
+        },
+      ];
+
+      showContextMenu(e.clientX, e.clientY, items);
+    });
+  });
+
+  // Right-click on Search Results rows
+  document.querySelectorAll(".search-result-row").forEach((row) => {
+    const el = row as HTMLElement;
+    const name = safeDecode(el.dataset.name);
+    const hash = el.dataset.hash || "";
+    const size = parseInt(el.dataset.size || "0");
+
+    el.addEventListener("contextmenu", (e: MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const items: ContextMenuItem[] = [
+        {
+          label: `⬇ ${t("search.downloadAction")}`,
+          icon: "⬇️",
+          onClick: async () => {
+            await api.downloadFile(hash);
+            navigate("downloads");
+          },
+        },
+        {
+          label: `🧹 ${t("cleaner.downloadClean")}`,
+          icon: "🧹",
+          onClick: () => {
+            showFilenameCleanModal(name, "download", async (cleanName) => {
+              try {
+                await api.downloadFile(hash);
+                if (cleanName && cleanName !== name) {
+                  setTimeout(async () => {
+                    try {
+                      await api.renameFile(hash, cleanName, name);
+                    } catch (e) {
+                      console.warn("Could not auto-rename download:", e);
+                    }
+                  }, 350);
+                }
+                showToast(`⬇ ${t("downloads.title")}: ${cleanName || name}`);
+                navigate("downloads");
+              } catch (err) {
+                showToast(`⚠️ ${err}`);
+              }
+            });
+          },
+        },
+        "divider",
+        {
+          label: t("contextMenu.copyEd2k"),
+          icon: "📋",
+          onClick: async () => {
+            const ed2kLink = `ed2k://|file|${name}|${size}|${hash}|/`;
+            try {
+              await navigator.clipboard.writeText(ed2kLink);
+              showToast(`📋 ${t("cleaner.copied")}`);
+            } catch {
+              showToast(ed2kLink);
+            }
+          },
+        },
+        {
+          label: t("contextMenu.copyHash"),
+          icon: "🔑",
+          onClick: async () => {
+            try {
+              await navigator.clipboard.writeText(hash);
+              showToast(`🔑 Hash copiado`);
+            } catch {
+              showToast(hash);
+            }
+          },
+        },
+      ];
+
+      showContextMenu(e.clientX, e.clientY, items);
+    });
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Status Bar & Polling
+// ═══════════════════════════════════════════════════════════════════
+
+function startPolling() {
+  if (pollInterval) clearInterval(pollInterval);
+  pollInterval = setInterval(() => {
+    // Only refresh if not typing to avoid losing focus
+    const activeEl = document.activeElement;
+    if (activeEl && (activeEl.id === "input-filter-downloads" || activeEl.id === "search-query")) {
+      return;
+    }
+    // Never re-render whole view if on Search or Settings to prevent wiping user UI!
+    if (currentView === "search" || currentView === "settings") {
+      return;
+    }
+    renderView();
+  }, 3000);
+}
+
+function updateFooter(stats: GlobalStats | null) {
+  lastStats = stats;
+  const el = document.getElementById("status-bar");
+  if (!el) return;
+  if (!stats) {
+    el.innerHTML = `<span>${t("status.disconnectedFromDaemon")}</span>`;
+    if (!manualLogoOverride && currentLogoState !== "idle") {
+      updateAppLogo("idle");
+    }
+    return;
+  }
+
+  // Dynamic logo state update based on real network & download conditions
+  if (!manualLogoOverride) {
+    let nextState: LogoState = "idle";
+    if (stats.download_speed > 1024) {
+      nextState = "downloading";
+    } else if (stats.kad_firewalled) {
+      nextState = "warning";
+    } else if (stats.ed2k_connected || stats.kad_connected) {
+      nextState = "connected";
+    }
+    if (nextState !== currentLogoState) {
+      updateAppLogo(nextState);
+    }
+  }
+
+  const ed2kStatus = stats.ed2k_connected
+    ? `🟢 ${t("common.connect")} (${stats.ed2k_id})`
+    : `🔴 ${t("common.disconnect")} (${stats.ed2k_id})`;
+
+  const kadStatus = stats.kad_connected
+    ? (stats.kad_firewalled ? `🟡 ${t("servers.kadFirewalled")}` : `🟢 ${t("servers.kadOpen")}`)
+    : `🔴 ${t("servers.kadDisconnected")}`;
+
+  el.innerHTML = `
+    <div class="footer-metrics">
+      <div class="footer-item">▼ <strong>${formatSpeed(stats.download_speed)}</strong></div>
+      <div class="footer-item">▲ <strong>${formatSpeed(stats.upload_speed)}</strong></div>
+      <span class="footer-sep">|</span>
+      <div class="footer-item">eD2k: ${ed2kStatus}</div>
+      <span class="footer-sep">|</span>
+      <div class="footer-item">Kad: ${kadStatus}</div>
+    </div>
+    <div class="footer-actions">
+      <span>🗕 ${t("nav.minimizeToTray")}</span>
+    </div>`;
+}
+
+// Footer polling
+setInterval(async () => {
+  try {
+    const stats = await api.getStats();
+    updateFooter(stats);
+  } catch {
+    updateFooter(null);
+  }
+}, 2000);
+
+// ═══════════════════════════════════════════════════════════════════
+// App Shell Initialization
+// ═══════════════════════════════════════════════════════════════════
+
+function renderAppShell() {
+  const currentTheme = ThemeManager.getColorScheme();
+  const isDark = ThemeManager.isEffectiveDark();
+  const themeIcon = currentTheme === "system" ? "💻" : (isDark ? "🌙" : "☀️");
+  const themeLabel =
+    currentTheme === "system"
+      ? t("settings.themeSystem")
+      : isDark
+      ? t("settings.themeDark")
+      : t("settings.themeLight");
+
+  document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
+    <div class="app-shell">
+      <nav class="sidebar">
+        <div class="sidebar-header" style="cursor: pointer; gap: 10px;" title="TauriMule: ${t("settings.title")}" onclick="window.navigateToView('settings')">
+          <div id="sidebar-logo-container" style="display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; flex-shrink: 0;">
+            ${getLogoSvg(currentLogoState, 28, "sb-logo")}
+          </div>
+          <div class="sidebar-brand-text" style="display: flex; flex-direction: column; line-height: 1.15; overflow: hidden;">
+            <span style="font-weight: 700; font-size: 14px; letter-spacing: -0.3px; color: var(--text-primary);">TauriMule</span>
+            <span id="brand-status-tag" class="brand-badge state-${currentLogoState}">${getLocalizedLogoLabel(currentLogoState)}</span>
+          </div>
+        </div>
+
+        <div class="nav-section-title">${t("nav.navigation")}</div>
+        <div class="nav-item ${currentView === "downloads" ? "active" : ""}" data-view="downloads">
+          <span class="nav-icon">⬇️</span>
+          <span>${t("nav.downloads")}</span>
+          <span class="nav-badge" id="badge-dl-count">${cachedDownloads.length}</span>
+        </div>
+        <div class="nav-item ${currentView === "servers" ? "active" : ""}" data-view="servers">
+          <span class="nav-icon">🌐</span>
+          <span>${t("nav.servers")}</span>
+        </div>
+        <div class="nav-item ${currentView === "search" ? "active" : ""}" data-view="search">
+          <span class="nav-icon">🔍</span>
+          <span>${t("nav.search")}</span>
+        </div>
+        <div class="nav-item ${currentView === "uploads" ? "active" : ""}" data-view="uploads">
+          <span class="nav-icon">⬆️</span>
+          <span>${t("nav.uploads")}</span>
+        </div>
+
+        <div class="nav-section-title" style="margin-top: 14px;">${t("nav.preferences")}</div>
+        <div class="nav-item ${currentView === "settings" ? "active" : ""}" data-view="settings">
+          <span class="nav-icon">⚙️</span>
+          <span>${t("nav.settings")}</span>
+        </div>
+
+        <div class="sidebar-spacer"></div>
+
+        <div class="sidebar-footer" style="display: flex; flex-direction: column; gap: 8px;">
+          <button class="sidebar-theme-btn" id="btn-quick-theme" title="${t("settings.appearance")}: ${themeLabel}">
+            <span>${themeIcon}</span>
+            <span style="flex: 1; text-align: left;">${themeLabel}</span>
+          </button>
+          <div class="tray-hint">
+            <span>🗕</span>
+            <span>${t("nav.minimizeToTray")}</span>
+          </div>
+          <div>TauriMule ${t("nav.version")}</div>
+        </div>
+      </nav>
+
+      <main class="main-content">
+        <div id="content"></div>
+      </main>
+
+      <footer class="status-footer" id="status-bar">
+        <span>${t("status.startingDaemon")}</span>
+      </footer>
+    </div>`;
+
+  // Navigation clicks
+  document.querySelectorAll(".nav-item").forEach((el) => {
+    el.addEventListener("click", () => navigate(el.getAttribute("data-view") as ViewName));
+  });
+
+  // Quick theme toggle click (cycles dark -> light -> system)
+  document.getElementById("btn-quick-theme")?.addEventListener("click", () => {
+    const scheme = ThemeManager.getColorScheme();
+    let next: ColorScheme = "dark";
+    if (scheme === "dark") next = "light";
+    else if (scheme === "light") next = "system";
+    else next = "dark";
+    ThemeManager.setColorScheme(next);
+    renderAppShell();
+    renderView();
+  });
+}
+
+// Initial boot
+renderAppShell();
+navigate("downloads");
+
+// Global paste listener: if user pastes an eD2k link anywhere in the app
+window.addEventListener("paste", (e: ClipboardEvent) => {
+  const activeEl = document.activeElement;
+  if (activeEl?.id === "input-ed2k-textarea") {
+    return;
+  }
+  const pasted = e.clipboardData?.getData("text") || "";
+  if (pasted.includes("ed2k://|file|")) {
+    e.preventDefault();
+    showAddEd2kModal(pasted.trim());
+  }
+});
