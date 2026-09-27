@@ -177,6 +177,10 @@ pub fn run() {
             commands::servers::disconnect_server,
             commands::servers::get_stats,
             commands::servers::get_kad_status,
+            commands::servers::add_server,
+            commands::servers::remove_server,
+            commands::servers::update_servers_from_url,
+            commands::servers::load_local_server_met,
             // Search
             commands::search::start_search,
             commands::search::get_search_results,
@@ -195,6 +199,13 @@ pub fn run() {
             commands::downloads::add_ed2k_links,
             // Uploads
             commands::uploads::get_upload_queue,
+            // Configuration & Import
+            commands::config::get_config,
+            commands::config::save_config,
+            commands::config::import_from_emule,
+            commands::config::import_from_amule,
+            commands::config::pick_folder,
+            commands::config::open_folder,
         ])
         .run(tauri::generate_context!())
         .expect("error while running TauriMule");

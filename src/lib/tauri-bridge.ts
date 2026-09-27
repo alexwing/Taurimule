@@ -67,6 +67,28 @@ export interface UploadInfo {
   transferred: number;
 }
 
+export interface AppConfig {
+  nick: string;
+  incoming_dir: string;
+  temp_dir: string;
+  port: number;
+  udp_port: number;
+  max_upload: number;
+  max_download: number;
+  connect_ed2k: boolean;
+  connect_kad: boolean;
+  auto_connect: boolean;
+  config_dir: string;
+}
+
+export interface ImportResult {
+  success: boolean;
+  message: string;
+  servers_count: number;
+  incoming_dir?: string;
+  temp_dir?: string;
+}
+
 export const api = {
   // Daemon lifecycle
   startDaemon: () => invoke<DaemonStatus>('start_daemon'),
@@ -79,6 +101,10 @@ export const api = {
   connectServer: (ip: string, port: number) => invoke<void>('connect_server', { ip, port }),
   disconnectServer: () => invoke<void>('disconnect_server'),
   getStats: () => invoke<GlobalStats>('get_stats'),
+  addServer: (ip: string, port: number, name: string) => invoke<void>('add_server', { ip, port, name }),
+  removeServer: (ip: string, port: number) => invoke<void>('remove_server', { ip, port }),
+  updateServersFromUrl: (url: string) => invoke<number>('update_servers_from_url', { url }),
+  loadLocalServerMet: (filePath: string) => invoke<number>('load_local_server_met', { filePath }),
 
   // Search
   startSearch: (params: SearchParams) => invoke<void>('start_search', { params }),
@@ -102,6 +128,14 @@ export const api = {
 
   // Uploads
   getUploadQueue: () => invoke<UploadInfo[]>('get_upload_queue'),
+
+  // Configuration & Import
+  getConfig: () => invoke<AppConfig>('get_config'),
+  saveConfig: (config: AppConfig) => invoke<void>('save_config', { config }),
+  importFromEmule: (customPath?: string) => invoke<ImportResult>('import_from_emule', { customPath }),
+  importFromAmule: (customPath?: string) => invoke<ImportResult>('import_from_amule', { customPath }),
+  pickFolder: (title: string, initialPath?: string) => invoke<string | null>('pick_folder', { title, initialPath }),
+  openFolder: (path: string) => invoke<void>('open_folder', { path }),
 };
 
 export interface AddEd2kItem {

@@ -286,6 +286,43 @@ impl EcConnection {
         Ok(())
     }
 
+    /// Add a new ED2K server.
+    pub async fn add_server(&mut self, ip: &str, port: u16, name: &str) -> Result<(), String> {
+        let mut pkt = EcPacket::new(EC_OP_SERVER_ADD);
+        let parts: Vec<u8> = ip.split('.').map(|p| p.parse().unwrap_or(0)).collect();
+        if parts.len() == 4 {
+            let ip_u32 = u32::from_be_bytes([parts[0], parts[1], parts[2], parts[3]]);
+            let mut server_tag = EcTag::new_u32(EC_TAG_SERVER, ip_u32);
+            server_tag.add_child(EcTag::new_u16(EC_TAG_SERVER_PORT, port));
+            server_tag.add_child(EcTag::new_string(EC_TAG_SERVER_NAME, name));
+            pkt.add_tag(server_tag);
+        }
+        self.request(&pkt).await?;
+        Ok(())
+    }
+
+    /// Remove an ED2K server.
+    pub async fn remove_server(&mut self, ip: &str, port: u16) -> Result<(), String> {
+        let mut pkt = EcPacket::new(EC_OP_SERVER_REMOVE);
+        let parts: Vec<u8> = ip.split('.').map(|p| p.parse().unwrap_or(0)).collect();
+        if parts.len() == 4 {
+            let ip_u32 = u32::from_be_bytes([parts[0], parts[1], parts[2], parts[3]]);
+            let mut server_tag = EcTag::new_u32(EC_TAG_SERVER, ip_u32);
+            server_tag.add_child(EcTag::new_u16(EC_TAG_SERVER_PORT, port));
+            pkt.add_tag(server_tag);
+        }
+        self.request(&pkt).await?;
+        Ok(())
+    }
+
+    /// Update server.met list from URL.
+    pub async fn update_servers_from_url(&mut self, url: &str) -> Result<(), String> {
+        let mut pkt = EcPacket::new(EC_OP_SERVER_UPDATE_FROM_URL);
+        pkt.add_tag(EcTag::new_string(EC_TAG_STRING, url));
+        self.request(&pkt).await?;
+        Ok(())
+    }
+
     /// Start a search.
     pub async fn search_start(&mut self, params: &SearchParams) -> Result<(), String> {
         let mut search_tag = EcTag::new_u8(EC_TAG_SEARCH_TYPE, params.search_type.to_ec_value());

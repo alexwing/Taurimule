@@ -7,6 +7,7 @@ import {
   type UploadInfo,
   type DaemonStatus,
   type SearchResult,
+  type AppConfig,
 } from "./lib/tauri-bridge";
 import { getLogoSvg, getLogoDataUri, type LogoState } from "./lib/logo";
 import { ThemeManager, type ColorScheme } from "./lib/theme";
@@ -925,6 +926,180 @@ async function openAddEd2kModalWithClipboardCheck() {
 (window as any).parseEd2kLink = parseEd2kLink;
 (window as any).parseAllEd2kLinks = parseAllEd2kLinks;
 
+function showAddServerModal() {
+  document.getElementById("taurimule-add-server-modal")?.remove();
+
+  const modalOverlay = document.createElement("div");
+  modalOverlay.id = "taurimule-add-server-modal";
+  modalOverlay.className = "fluent-modal-overlay";
+
+  modalOverlay.innerHTML = `
+    <div class="fluent-modal" style="max-width: 480px; width: 92%;">
+      <div class="fluent-modal-header">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 18px;">🌐</span>
+          <span style="font-weight: 700; font-size: 15px;">${t("servers.addServerModalTitle")}</span>
+        </div>
+        <button class="fluent-modal-close" id="btn-close-add-server-modal">&times;</button>
+      </div>
+
+      <div class="fluent-modal-body" style="display: flex; flex-direction: column; gap: 14px; padding: 18px 20px;">
+        <div>
+          <label style="font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; margin-bottom: 4px; display: block;">
+            ${t("servers.serverIpLabel")} *
+          </label>
+          <input type="text" id="modal-server-ip" class="table-search-input" style="width: 100%; box-sizing: border-box;" placeholder="176.123.5.89" required />
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 12px;">
+          <div>
+            <label style="font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; margin-bottom: 4px; display: block;">
+              ${t("servers.serverPortLabel")} *
+            </label>
+            <input type="number" id="modal-server-port" class="table-search-input" style="width: 100%; box-sizing: border-box;" value="4661" min="1" max="65535" required />
+          </div>
+          <div>
+            <label style="font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; margin-bottom: 4px; display: block;">
+              ${t("servers.serverNameLabel")}
+            </label>
+            <input type="text" id="modal-server-name" class="table-search-input" style="width: 100%; box-sizing: border-box;" placeholder="eMule Security" />
+          </div>
+        </div>
+
+        <div id="modal-server-feedback" style="font-size: 12px; color: var(--danger); min-height: 16px;"></div>
+      </div>
+
+      <div class="fluent-modal-footer" style="display: flex; justify-content: flex-end; gap: 10px; padding: 12px 20px;">
+        <button class="btn btn-secondary" id="btn-cancel-add-server">${t("common.cancel")}</button>
+        <button class="btn btn-primary" id="btn-submit-add-server">➕ ${t("servers.addServerBtn")}</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(modalOverlay);
+
+  const closeModal = () => modalOverlay.remove();
+  modalOverlay.querySelector("#btn-close-add-server-modal")?.addEventListener("click", closeModal);
+  modalOverlay.querySelector("#btn-cancel-add-server")?.addEventListener("click", closeModal);
+
+  modalOverlay.querySelector("#btn-submit-add-server")?.addEventListener("click", async () => {
+    const ipInput = modalOverlay.querySelector("#modal-server-ip") as HTMLInputElement;
+    const portInput = modalOverlay.querySelector("#modal-server-port") as HTMLInputElement;
+    const nameInput = modalOverlay.querySelector("#modal-server-name") as HTMLInputElement;
+    const feedback = modalOverlay.querySelector("#modal-server-feedback") as HTMLElement;
+
+    const ip = ipInput.value.trim();
+    const port = parseInt(portInput.value.trim(), 10);
+    const name = nameInput.value.trim() || ip;
+
+    if (!ip || isNaN(port) || port < 1 || port > 65535) {
+      if (feedback) feedback.textContent = "Por favor, introduce una dirección IP y un puerto válidos (1-65535).";
+      return;
+    }
+
+    try {
+      await api.addServer(ip, port, name);
+      closeModal();
+      showToast(`🌐 ${t("servers.serverAddedSuccess")}`);
+      renderView();
+    } catch (e) {
+      if (feedback) feedback.textContent = `Error: ${e}`;
+    }
+  });
+
+  setTimeout(() => {
+    (modalOverlay.querySelector("#modal-server-ip") as HTMLInputElement)?.focus();
+  }, 50);
+}
+
+function showUpdateServerMetModal() {
+  document.getElementById("taurimule-update-servermet-modal")?.remove();
+
+  const modalOverlay = document.createElement("div");
+  modalOverlay.id = "taurimule-update-servermet-modal";
+  modalOverlay.className = "fluent-modal-overlay";
+
+  modalOverlay.innerHTML = `
+    <div class="fluent-modal" style="max-width: 520px; width: 92%;">
+      <div class="fluent-modal-header">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 18px;">🔄</span>
+          <span style="font-weight: 700; font-size: 15px;">${t("servers.updateServerMetTitle")}</span>
+        </div>
+        <button class="fluent-modal-close" id="btn-close-servermet-modal">&times;</button>
+      </div>
+
+      <div class="fluent-modal-body" style="display: flex; flex-direction: column; gap: 14px; padding: 18px 20px;">
+        <p style="font-size: 12.5px; color: var(--text-secondary); margin: 0;">
+          Introduce la URL de una lista de servidores server.met o pulsa una de las fuentes públicas recomendadas.
+        </p>
+
+        <div>
+          <label style="font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; margin-bottom: 6px; display: block;">
+            ${t("servers.popularUrlsLabel")}
+          </label>
+          <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+            <button class="btn btn-secondary btn-sm preset-url-btn" data-url="http://www.gruk.org/server.met">Gruk.org</button>
+            <button class="btn btn-secondary btn-sm preset-url-btn" data-url="http://edk.peerates.net/servers.met">Peerates.net</button>
+            <button class="btn btn-secondary btn-sm preset-url-btn" data-url="http://emuling.gitlab.io/server.met">eMuling</button>
+          </div>
+        </div>
+
+        <div>
+          <label style="font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; margin-bottom: 4px; display: block;">
+            ${t("servers.serverMetUrlLabel")}
+          </label>
+          <input type="url" id="modal-servermet-url" class="table-search-input" style="width: 100%; box-sizing: border-box; font-family: var(--font-mono); font-size: 12px;" value="http://www.gruk.org/server.met" required />
+        </div>
+
+        <div id="modal-servermet-feedback" style="font-size: 12px; color: var(--text-secondary); min-height: 16px;"></div>
+      </div>
+
+      <div class="fluent-modal-footer" style="display: flex; justify-content: flex-end; gap: 10px; padding: 12px 20px;">
+        <button class="btn btn-secondary" id="btn-cancel-servermet">${t("common.cancel")}</button>
+        <button class="btn btn-primary" id="btn-submit-servermet">🌐 ${t("servers.updateServerMetBtn")}</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(modalOverlay);
+
+  const closeModal = () => modalOverlay.remove();
+  modalOverlay.querySelector("#btn-close-servermet-modal")?.addEventListener("click", closeModal);
+  modalOverlay.querySelector("#btn-cancel-servermet")?.addEventListener("click", closeModal);
+
+  modalOverlay.querySelectorAll(".preset-url-btn").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      const url = (e.currentTarget as HTMLElement).dataset.url;
+      const input = modalOverlay.querySelector("#modal-servermet-url") as HTMLInputElement;
+      if (input && url) input.value = url;
+    });
+  });
+
+  modalOverlay.querySelector("#btn-submit-servermet")?.addEventListener("click", async () => {
+    const input = modalOverlay.querySelector("#modal-servermet-url") as HTMLInputElement;
+    const feedback = modalOverlay.querySelector("#modal-servermet-feedback") as HTMLElement;
+    const submitBtn = modalOverlay.querySelector("#btn-submit-servermet") as HTMLButtonElement;
+    const url = input.value.trim();
+
+    if (!url) return;
+
+    if (feedback) feedback.textContent = "Descargando y actualizando lista de servidores...";
+    if (submitBtn) submitBtn.disabled = true;
+
+    try {
+      const count = await api.updateServersFromUrl(url);
+      closeModal();
+      showToast(t("servers.serversUpdatedSuccess", { count: count.toString() }));
+      renderView();
+    } catch (e) {
+      if (feedback) feedback.textContent = `Error: ${e}`;
+      if (submitBtn) submitBtn.disabled = false;
+    }
+  });
+}
+
+
 // ═══════════════════════════════════════════════════════════════════
 // SPA Router & Navigation
 // ═══════════════════════════════════════════════════════════════════
@@ -962,7 +1137,7 @@ async function renderView() {
       content.innerHTML = await renderUploadsView();
       break;
     case "settings":
-      content.innerHTML = renderSettingsView();
+      content.innerHTML = await renderSettingsView();
       break;
   }
 
@@ -1299,9 +1474,13 @@ async function renderServersView(): Promise<string> {
 
   const tableHtml = `
     <div class="table-container">
-      <div class="table-toolbar">
+      <div class="table-toolbar" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
         <div style="font-weight: 600; font-size: 13px;">${t("servers.availableServers", { count: servers.length })}</div>
-        <button class="btn btn-primary btn-icon" id="btn-refresh-servers">🔄 ${t("servers.refreshServers")}</button>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+          <button class="btn btn-secondary btn-icon" id="btn-show-add-server">➕ ${t("servers.addServer")}</button>
+          <button class="btn btn-secondary btn-icon" id="btn-show-update-servermet">🌐 ${t("servers.updateServerMet")}</button>
+          <button class="btn btn-primary btn-icon" id="btn-refresh-servers">🔄 ${t("servers.refreshServers")}</button>
+        </div>
       </div>
       <table class="fluent-table">
         <thead>
@@ -1330,12 +1509,15 @@ async function renderServersView(): Promise<string> {
                   <td style="font-family: var(--font-mono);">${s.ip}:${s.port}</td>
                   <td>${s.users.toLocaleString()}</td>
                   <td>${s.files.toLocaleString()}</td>
-                  <td style="text-align: right;">
-                    ${
-                      s.is_connected
-                        ? `<button class="btn btn-secondary btn-icon" data-action="disconnect-server">${t("common.disconnect")}</button>`
-                        : `<button class="btn btn-primary btn-icon" data-action="connect-server" data-ip="${s.ip}" data-port="${s.port}">${t("common.connect")}</button>`
-                    }
+                  <td style="text-align: right; white-space: nowrap;">
+                    <div style="display: flex; gap: 6px; justify-content: flex-end; align-items: center;">
+                      ${
+                        s.is_connected
+                          ? `<button class="btn btn-secondary btn-sm btn-icon" data-action="disconnect-server">${t("common.disconnect")}</button>`
+                          : `<button class="btn btn-primary btn-sm btn-icon" data-action="connect-server" data-ip="${s.ip}" data-port="${s.port}">${t("common.connect")}</button>`
+                      }
+                      <button class="btn btn-danger btn-sm btn-icon" data-action="remove-server" data-ip="${s.ip}" data-port="${s.port}" title="${t("servers.removeServer")}">🗑️</button>
+                    </div>
                   </td>
                 </tr>`
                   )
@@ -1635,9 +1817,29 @@ async function renderUploadsView(): Promise<string> {
 // 5. SETTINGS VIEW (Configuración e Importación + Apariencia & Idioma)
 // ═══════════════════════════════════════════════════════════════════
 
-function renderSettingsView(): string {
+async function renderSettingsView(): Promise<string> {
   const currentTheme = ThemeManager.getColorScheme();
   const currentLang = I18nManager.getLanguageSetting();
+
+  let config: AppConfig = {
+    nick: "TauriMule-User",
+    incoming_dir: "",
+    temp_dir: "",
+    port: 4662,
+    udp_port: 4672,
+    max_upload: 0,
+    max_download: 0,
+    connect_ed2k: true,
+    connect_kad: true,
+    auto_connect: true,
+    config_dir: "",
+  };
+
+  try {
+    config = await api.getConfig();
+  } catch (e) {
+    console.warn("Could not load config:", e);
+  }
 
   return `
     ${renderHeader(t("settings.title"), t("settings.subtitle"), t("nav.settings"))}
@@ -1767,25 +1969,218 @@ function renderSettingsView(): string {
       </div>
     </div>
 
-    <!-- Active eMule Configuration Parameters -->
+    <!-- Directories Configuration Card -->
+    <div class="table-container" style="padding: 24px; max-width: 850px; margin-bottom: 20px;">
+      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px; margin-bottom: 16px;">
+        <div>
+          <h3 style="font-size: 16px; font-weight: 700; margin: 0; display: flex; align-items: center; gap: 8px;">
+            <span>📁</span>
+            <span>${t("settings.directoriesTitle")}</span>
+          </h3>
+          <p style="color: var(--text-secondary); font-size: 12px; margin-top: 4px; margin-bottom: 0;">
+            ${t("settings.directoriesDesc")}
+          </p>
+        </div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 16px;">
+        <div>
+          <label style="font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; margin-bottom: 6px; display: block;">
+            ${t("settings.incomingDirLabel")}
+          </label>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <input type="text" id="input-cfg-incoming" class="table-search-input" style="flex: 1; font-family: var(--font-mono); font-size: 12px;" value="${config.incoming_dir}" />
+            <button class="btn btn-secondary btn-sm" id="btn-browse-incoming" title="${t("settings.browseFolder")}">📁 ${t("settings.browseFolder")}</button>
+            <button class="btn btn-secondary btn-sm" id="btn-open-incoming" title="${t("settings.openFolder")}">↗ ${t("settings.openFolder")}</button>
+          </div>
+        </div>
+
+        <div>
+          <label style="font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; margin-bottom: 6px; display: block;">
+            ${t("settings.tempDirLabel")}
+          </label>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <input type="text" id="input-cfg-temp" class="table-search-input" style="flex: 1; font-family: var(--font-mono); font-size: 12px;" value="${config.temp_dir}" />
+            <button class="btn btn-secondary btn-sm" id="btn-browse-temp" title="${t("settings.browseFolder")}">📁 ${t("settings.browseFolder")}</button>
+            <button class="btn btn-secondary btn-sm" id="btn-open-temp" title="${t("settings.openFolder")}">↗ ${t("settings.openFolder")}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Connection & Network Card -->
+    <div class="table-container" style="padding: 24px; max-width: 850px; margin-bottom: 20px;">
+      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px; margin-bottom: 16px;">
+        <div>
+          <h3 style="font-size: 16px; font-weight: 700; margin: 0; display: flex; align-items: center; gap: 8px;">
+            <span>🌐</span>
+            <span>${t("settings.networkTitle")}</span>
+          </h3>
+          <p style="color: var(--text-secondary); font-size: 12px; margin-top: 4px; margin-bottom: 0;">
+            ${t("settings.networkDesc")}
+          </p>
+        </div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 16px;">
+        <div>
+          <label style="font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; margin-bottom: 6px; display: block;">
+            ${t("settings.nickLabel")}
+          </label>
+          <input type="text" id="input-cfg-nick" class="table-search-input" style="width: 100%; box-sizing: border-box; max-width: 380px;" value="${config.nick}" />
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
+          <div>
+            <label style="font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; margin-bottom: 6px; display: block;">
+              ${t("settings.tcpPortLabel")}
+            </label>
+            <input type="number" id="input-cfg-port" class="table-search-input" style="width: 100%; box-sizing: border-box;" value="${config.port}" min="1" max="65535" />
+          </div>
+          <div>
+            <label style="font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; margin-bottom: 6px; display: block;">
+              ${t("settings.udpPortLabel")}
+            </label>
+            <input type="number" id="input-cfg-udpport" class="table-search-input" style="width: 100%; box-sizing: border-box;" value="${config.udp_port}" min="1" max="65535" />
+          </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
+          <div>
+            <label style="font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; margin-bottom: 6px; display: block;">
+              ${t("settings.maxDownloadLabel")} <span style="font-weight: 400; text-transform: none; color: var(--text-tertiary);">(${t("settings.unlimitedHint")})</span>
+            </label>
+            <input type="number" id="input-cfg-maxdown" class="table-search-input" style="width: 100%; box-sizing: border-box;" value="${config.max_download}" min="0" />
+          </div>
+          <div>
+            <label style="font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; margin-bottom: 6px; display: block;">
+              ${t("settings.maxUploadLabel")} <span style="font-weight: 400; text-transform: none; color: var(--text-tertiary);">(${t("settings.unlimitedHint")})</span>
+            </label>
+            <input type="number" id="input-cfg-maxup" class="table-search-input" style="width: 100%; box-sizing: border-box;" value="${config.max_upload}" min="0" />
+          </div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 4px;">
+          <label class="fluent-switch-container">
+            <div class="fluent-switch">
+              <input type="checkbox" id="check-cfg-ed2k" class="fluent-switch-input" ${config.connect_ed2k ? "checked" : ""} />
+              <span class="fluent-switch-track"><span class="fluent-switch-thumb"></span></span>
+            </div>
+            <span class="fluent-switch-label">${t("settings.connectEd2kLabel")}</span>
+          </label>
+
+          <label class="fluent-switch-container">
+            <div class="fluent-switch">
+              <input type="checkbox" id="check-cfg-kad" class="fluent-switch-input" ${config.connect_kad ? "checked" : ""} />
+              <span class="fluent-switch-track"><span class="fluent-switch-thumb"></span></span>
+            </div>
+            <span class="fluent-switch-label">${t("settings.connectKadLabel")}</span>
+          </label>
+
+          <label class="fluent-switch-container">
+            <div class="fluent-switch">
+              <input type="checkbox" id="check-cfg-autoconnect" class="fluent-switch-input" ${config.auto_connect ? "checked" : ""} />
+              <span class="fluent-switch-track"><span class="fluent-switch-thumb"></span></span>
+            </div>
+            <span class="fluent-switch-label">${t("settings.autoConnectLabel")}</span>
+          </label>
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 12px; margin-top: 8px;">
+          <button class="btn btn-primary" id="btn-save-config">💾 ${t("settings.saveConfigBtn")}</button>
+          <span id="save-config-feedback" style="font-size: 12px; font-weight: 500;"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Import Assistant Card -->
+    <div class="table-container" style="padding: 24px; max-width: 850px; margin-bottom: 20px;">
+      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px; margin-bottom: 16px;">
+        <div>
+          <h3 style="font-size: 16px; font-weight: 700; margin: 0; display: flex; align-items: center; gap: 8px;">
+            <span>📦</span>
+            <span>${t("settings.importSectionTitle")}</span>
+          </h3>
+          <p style="color: var(--text-secondary); font-size: 12px; margin-top: 4px; margin-bottom: 0;">
+            ${t("settings.importSectionDesc")}
+          </p>
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; margin-bottom: 14px;">
+        <!-- eMule Import Card -->
+        <div class="metric-card" style="padding: 16px; display: flex; flex-direction: column; gap: 10px;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 18px;">🐴</span>
+            <span style="font-weight: 700; font-size: 14px;">${t("settings.importEmuleCardTitle")}</span>
+          </div>
+          <p style="font-size: 12px; color: var(--text-secondary); margin: 0; line-height: 1.4;">
+            ${t("settings.importEmuleCardDesc")}
+          </p>
+          <button class="btn btn-primary btn-sm" id="btn-import-emule-auto" style="align-self: flex-start; margin-top: 2px;">
+            ⚡ ${t("settings.importEmuleAutoBtn")}
+          </button>
+
+          <div style="border-top: 1px solid var(--border-subtle); padding-top: 10px; margin-top: 4px;">
+            <label style="font-size: 10.5px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; margin-bottom: 4px; display: block;">
+              ${t("settings.customPathLabel")}
+            </label>
+            <div style="display: flex; gap: 6px;">
+              <input type="text" id="input-import-emule-path" class="table-search-input" style="flex: 1; font-size: 11.5px; font-family: var(--font-mono);" placeholder="${t("settings.customPathPlaceholder")}" />
+              <button class="btn btn-secondary btn-sm" id="btn-browse-import-emule" title="Examinar carpeta">📁</button>
+              <button class="btn btn-secondary btn-sm" id="btn-import-emule-custom">${t("settings.importCustomBtn")}</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- aMule Import Card -->
+        <div class="metric-card" style="padding: 16px; display: flex; flex-direction: column; gap: 10px;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 18px;">⚡</span>
+            <span style="font-weight: 700; font-size: 14px;">${t("settings.importAmuleCardTitle")}</span>
+          </div>
+          <p style="font-size: 12px; color: var(--text-secondary); margin: 0; line-height: 1.4;">
+            ${t("settings.importAmuleCardDesc")}
+          </p>
+          <button class="btn btn-primary btn-sm" id="btn-import-amule-auto" style="align-self: flex-start; margin-top: 2px;">
+            ⚡ ${t("settings.importAmuleAutoBtn")}
+          </button>
+
+          <div style="border-top: 1px solid var(--border-subtle); padding-top: 10px; margin-top: 4px;">
+            <label style="font-size: 10.5px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; margin-bottom: 4px; display: block;">
+              ${t("settings.customPathLabel")}
+            </label>
+            <div style="display: flex; gap: 6px;">
+              <input type="text" id="input-import-amule-path" class="table-search-input" style="flex: 1; font-size: 11.5px; font-family: var(--font-mono);" placeholder="C:\\Users\\...\\.aMule" />
+              <button class="btn btn-secondary btn-sm" id="btn-browse-import-amule" title="Examinar carpeta">📁</button>
+              <button class="btn btn-secondary btn-sm" id="btn-import-amule-custom">${t("settings.importCustomBtn")}</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="import-feedback-box" style="display: none; padding: 10px 14px; border-radius: var(--radius-sm); font-size: 12px; background: var(--bg-card-header); border: 1px solid var(--border-subtle);"></div>
+    </div>
+
+    <!-- Active Client Parameters -->
     <div class="table-container" style="padding: 24px; max-width: 850px;">
       <h3 style="margin-bottom: 16px; font-size: 16px;">${t("settings.emuleParamsTitle")}</h3>
       
       <div style="display: grid; grid-template-columns: 200px 1fr; gap: 12px; margin-bottom: 24px; font-size: 13px;">
         <span style="color: var(--text-secondary);">${t("settings.tempDir")}</span>
-        <span style="font-family: var(--font-mono);">C:\\Users\\Windows\\Downloads\\eMule\\Temp\\</span>
+        <span style="font-family: var(--font-mono);">${config.temp_dir || "—"}</span>
 
         <span style="color: var(--text-secondary);">${t("settings.incomingDir")}</span>
-        <span style="font-family: var(--font-mono);">D:\\Backup\\Pendiente\\</span>
+        <span style="font-family: var(--font-mono);">${config.incoming_dir || "—"}</span>
 
         <span style="color: var(--text-secondary);">${t("settings.tcpPort")}</span>
-        <span><strong style="color: #6ccb5f;">19644</strong> (${t("settings.highIdRouter")})</span>
+        <span><strong style="color: #6ccb5f;">${config.port}</strong> (${t("settings.highIdRouter")})</span>
 
         <span style="color: var(--text-secondary);">${t("settings.udpPort")}</span>
-        <span><strong style="color: #6ccb5f;">6591</strong> (${t("settings.noFirewall")})</span>
+        <span><strong style="color: #6ccb5f;">${config.udp_port}</strong> (${t("settings.noFirewall")})</span>
 
         <span style="color: var(--text-secondary);">${t("settings.limits")}</span>
-        <span>800 KB/s / 800 KB/s</span>
+        <span>${config.max_download > 0 ? `${config.max_download} KB/s` : "∞"} / ${config.max_upload > 0 ? `${config.max_upload} KB/s` : "∞"}</span>
 
         <span style="color: var(--text-secondary);">${t("settings.ecPort")}</span>
         <span style="font-family: var(--font-mono);">TCP 4712 (Localhost)</span>
@@ -1850,14 +2245,277 @@ function attachEventListeners() {
     }
   });
 
-  // Re-import eMule button
+  // Settings: Browse & Open Incoming Folder
+  document.getElementById("btn-browse-incoming")?.addEventListener("click", async () => {
+    const input = document.getElementById("input-cfg-incoming") as HTMLInputElement;
+    const current = input ? input.value : "";
+    try {
+      const selected = await api.pickFolder(t("settings.incomingDirLabel"), current);
+      if (selected && input) {
+        input.value = selected;
+      }
+    } catch (err) {
+      console.error("Browse incoming error:", err);
+    }
+  });
+
+  document.getElementById("btn-open-incoming")?.addEventListener("click", async () => {
+    const input = document.getElementById("input-cfg-incoming") as HTMLInputElement;
+    if (input && input.value) {
+      await api.openFolder(input.value);
+    }
+  });
+
+  // Settings: Browse & Open Temp Folder
+  document.getElementById("btn-browse-temp")?.addEventListener("click", async () => {
+    const input = document.getElementById("input-cfg-temp") as HTMLInputElement;
+    const current = input ? input.value : "";
+    try {
+      const selected = await api.pickFolder(t("settings.tempDirLabel"), current);
+      if (selected && input) {
+        input.value = selected;
+      }
+    } catch (err) {
+      console.error("Browse temp error:", err);
+    }
+  });
+
+  document.getElementById("btn-open-temp")?.addEventListener("click", async () => {
+    const input = document.getElementById("input-cfg-temp") as HTMLInputElement;
+    if (input && input.value) {
+      await api.openFolder(input.value);
+    }
+  });
+
+  // Settings: Save Configuration
+  document.getElementById("btn-save-config")?.addEventListener("click", async () => {
+    const nick = (document.getElementById("input-cfg-nick") as HTMLInputElement)?.value.trim() || "TauriMule-User";
+    const incoming = (document.getElementById("input-cfg-incoming") as HTMLInputElement)?.value.trim() || "";
+    const temp = (document.getElementById("input-cfg-temp") as HTMLInputElement)?.value.trim() || "";
+    const port = parseInt((document.getElementById("input-cfg-port") as HTMLInputElement)?.value || "4662", 10);
+    const udpPort = parseInt((document.getElementById("input-cfg-udpport") as HTMLInputElement)?.value || "4672", 10);
+    const maxDown = parseInt((document.getElementById("input-cfg-maxdown") as HTMLInputElement)?.value || "0", 10);
+    const maxUp = parseInt((document.getElementById("input-cfg-maxup") as HTMLInputElement)?.value || "0", 10);
+    const connectEd2k = (document.getElementById("check-cfg-ed2k") as HTMLInputElement)?.checked ?? true;
+    const connectKad = (document.getElementById("check-cfg-kad") as HTMLInputElement)?.checked ?? true;
+    const autoConnect = (document.getElementById("check-cfg-autoconnect") as HTMLInputElement)?.checked ?? true;
+    const feedback = document.getElementById("save-config-feedback");
+
+    const newConfig: AppConfig = {
+      nick,
+      incoming_dir: incoming,
+      temp_dir: temp,
+      port: isNaN(port) ? 4662 : port,
+      udp_port: isNaN(udpPort) ? 4672 : udpPort,
+      max_download: isNaN(maxDown) ? 0 : maxDown,
+      max_upload: isNaN(maxUp) ? 0 : maxUp,
+      connect_ed2k: connectEd2k,
+      connect_kad: connectKad,
+      auto_connect: autoConnect,
+      config_dir: "",
+    };
+
+    try {
+      await api.saveConfig(newConfig);
+      showToast(`✅ ${t("settings.configSavedSuccess")}`);
+      if (feedback) {
+        feedback.style.color = "var(--success)";
+        feedback.textContent = `✓ ${t("settings.configSavedSuccess")}`;
+        setTimeout(() => { if (feedback) feedback.textContent = ""; }, 4000);
+      }
+    } catch (err) {
+      showToast(`⚠️ Error al guardar: ${err}`);
+      if (feedback) {
+        feedback.style.color = "var(--danger)";
+        feedback.textContent = `⚠️ Error: ${err}`;
+      }
+    }
+  });
+
+  // Settings: Import eMule Auto
+  document.getElementById("btn-import-emule-auto")?.addEventListener("click", async () => {
+    const box = document.getElementById("import-feedback-box");
+    if (box) {
+      box.style.display = "block";
+      box.style.color = "var(--text-primary)";
+      box.textContent = "Buscando instalación de eMule en Windows e importando datos...";
+    }
+    try {
+      const res = await api.importFromEmule();
+      if (res.success) {
+        showToast(`✅ ${res.message}`);
+        if (box) {
+          box.style.color = "var(--success)";
+          box.textContent = `✅ ${res.message} (${res.servers_count} servidores importados). Recargando configuración...`;
+        }
+        setTimeout(() => renderView(), 1200);
+      } else {
+        if (box) {
+          box.style.color = "var(--danger)";
+          box.textContent = `⚠️ ${res.message}`;
+        }
+      }
+    } catch (err) {
+      if (box) {
+        box.style.color = "var(--danger)";
+        box.textContent = `⚠️ Error: ${err}`;
+      }
+    }
+  });
+
+  // Settings: Browse eMule Custom Path
+  document.getElementById("btn-browse-import-emule")?.addEventListener("click", async () => {
+    const input = document.getElementById("input-import-emule-path") as HTMLInputElement;
+    try {
+      const sel = await api.pickFolder("Seleccionar carpeta de configuración de eMule", input?.value);
+      if (sel && input) input.value = sel;
+    } catch (e) {
+      console.error(e);
+    }
+  });
+
+  // Settings: Import eMule Custom
+  document.getElementById("btn-import-emule-custom")?.addEventListener("click", async () => {
+    const path = (document.getElementById("input-import-emule-path") as HTMLInputElement)?.value.trim();
+    const box = document.getElementById("import-feedback-box");
+    if (!path) {
+      if (box) {
+        box.style.display = "block";
+        box.style.color = "var(--warning)";
+        box.textContent = "Por favor, selecciona o escribe una ruta válida.";
+      }
+      return;
+    }
+    if (box) {
+      box.style.display = "block";
+      box.style.color = "var(--text-primary)";
+      box.textContent = `Importando desde ${path}...`;
+    }
+    try {
+      const res = await api.importFromEmule(path);
+      if (res.success) {
+        showToast(`✅ ${res.message}`);
+        if (box) {
+          box.style.color = "var(--success)";
+          box.textContent = `✅ ${res.message} (${res.servers_count} servidores). Recargando configuración...`;
+        }
+        setTimeout(() => renderView(), 1200);
+      } else {
+        if (box) {
+          box.style.color = "var(--danger)";
+          box.textContent = `⚠️ ${res.message}`;
+        }
+      }
+    } catch (err) {
+      if (box) {
+        box.style.color = "var(--danger)";
+        box.textContent = `⚠️ Error: ${err}`;
+      }
+    }
+  });
+
+  // Settings: Import aMule Auto
+  document.getElementById("btn-import-amule-auto")?.addEventListener("click", async () => {
+    const box = document.getElementById("import-feedback-box");
+    if (box) {
+      box.style.display = "block";
+      box.style.color = "var(--text-primary)";
+      box.textContent = "Buscando configuración previa de aMule e importando datos...";
+    }
+    try {
+      const res = await api.importFromAmule();
+      if (res.success) {
+        showToast(`✅ ${res.message}`);
+        if (box) {
+          box.style.color = "var(--success)";
+          box.textContent = `✅ ${res.message} (${res.servers_count} servidores importados). Recargando configuración...`;
+        }
+        setTimeout(() => renderView(), 1200);
+      } else {
+        if (box) {
+          box.style.color = "var(--danger)";
+          box.textContent = `⚠️ ${res.message}`;
+        }
+      }
+    } catch (err) {
+      if (box) {
+        box.style.color = "var(--danger)";
+        box.textContent = `⚠️ Error: ${err}`;
+      }
+    }
+  });
+
+  // Settings: Browse aMule Custom Path
+  document.getElementById("btn-browse-import-amule")?.addEventListener("click", async () => {
+    const input = document.getElementById("input-import-amule-path") as HTMLInputElement;
+    try {
+      const sel = await api.pickFolder("Seleccionar carpeta de configuración de aMule", input?.value);
+      if (sel && input) input.value = sel;
+    } catch (e) {
+      console.error(e);
+    }
+  });
+
+  // Settings: Import aMule Custom
+  document.getElementById("btn-import-amule-custom")?.addEventListener("click", async () => {
+    const path = (document.getElementById("input-import-amule-path") as HTMLInputElement)?.value.trim();
+    const box = document.getElementById("import-feedback-box");
+    if (!path) {
+      if (box) {
+        box.style.display = "block";
+        box.style.color = "var(--warning)";
+        box.textContent = "Por favor, selecciona o escribe una ruta válida.";
+      }
+      return;
+    }
+    if (box) {
+      box.style.display = "block";
+      box.style.color = "var(--text-primary)";
+      box.textContent = `Importando desde ${path}...`;
+    }
+    try {
+      const res = await api.importFromAmule(path);
+      if (res.success) {
+        showToast(`✅ ${res.message}`);
+        if (box) {
+          box.style.color = "var(--success)";
+          box.textContent = `✅ ${res.message} (${res.servers_count} servidores). Recargando configuración...`;
+        }
+        setTimeout(() => renderView(), 1200);
+      } else {
+        if (box) {
+          box.style.color = "var(--danger)";
+          box.textContent = `⚠️ ${res.message}`;
+        }
+      }
+    } catch (err) {
+      if (box) {
+        box.style.color = "var(--danger)";
+        box.textContent = `⚠️ Error: ${err}`;
+      }
+    }
+  });
+
+  // Re-import eMule button (sync card)
   document.getElementById("btn-sync-emule")?.addEventListener("click", async () => {
     const feedback = document.getElementById("sync-feedback");
-    if (feedback) feedback.textContent = t("settings.syncing");
-    setTimeout(() => {
-      if (feedback) feedback.textContent = t("settings.syncSuccess");
-      renderView();
-    }, 800);
+    if (feedback) {
+      feedback.style.color = "var(--text-primary)";
+      feedback.textContent = t("settings.syncing");
+    }
+    try {
+      const res = await api.importFromEmule();
+      if (feedback) {
+        feedback.style.color = res.success ? "var(--success)" : "var(--danger)";
+        feedback.textContent = res.success ? `✓ ${res.message}` : `⚠️ ${res.message}`;
+      }
+      setTimeout(() => renderView(), 1200);
+    } catch (err) {
+      if (feedback) {
+        feedback.style.color = "var(--danger)";
+        feedback.textContent = `⚠️ Error: ${err}`;
+      }
+    }
   });
 
   // Theme select in Settings
@@ -1907,8 +2565,10 @@ function attachEventListeners() {
     });
   });
 
-  // Refresh servers
+  // Refresh & Manage servers
   document.getElementById("btn-refresh-servers")?.addEventListener("click", () => renderView());
+  document.getElementById("btn-show-add-server")?.addEventListener("click", () => showAddServerModal());
+  document.getElementById("btn-show-update-servermet")?.addEventListener("click", () => showUpdateServerMetModal());
 
   // Search tab selection
   document.querySelectorAll(".search-tab").forEach((tabEl) => {
@@ -2185,6 +2845,22 @@ function attachEventListeners() {
             await api.disconnectServer();
             renderView();
             break;
+          case "remove-server": {
+            const ip = target.dataset.ip;
+            const port = parseInt(target.dataset.port || "0", 10);
+            if (ip && port) {
+              if (confirm(t("servers.confirmRemoveServer"))) {
+                try {
+                  await api.removeServer(ip, port);
+                  showToast(`🗑️ ${t("servers.serverRemovedSuccess")}`);
+                  renderView();
+                } catch (err) {
+                  showToast(`⚠️ Error: ${err}`);
+                }
+              }
+            }
+            break;
+          }
         }
       } catch (err) {
         console.error("Action error:", action, err);

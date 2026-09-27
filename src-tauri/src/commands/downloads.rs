@@ -253,11 +253,45 @@ fn resolve_download_file(name: &str, hash: Option<&str>, path: Option<&str>) -> 
     }
 
     let decoded_name = url_decode(name);
-    let search_dirs = [
-        PathBuf::from(r"D:\Backup\Pendiente"),
-        PathBuf::from(r"C:\Users\Windows\Downloads\eMule\Incoming"),
-        PathBuf::from(r"C:\Users\Windows\Downloads\eMule\Temp"),
-    ];
+    let mut search_dirs = Vec::new();
+
+    // 1. From active configuration (amule.conf)
+    if let Ok(config) = super::config::get_config() {
+        let inc = PathBuf::from(&config.incoming_dir);
+        if inc.exists() {
+            search_dirs.push(inc);
+        }
+        let tmp = PathBuf::from(&config.temp_dir);
+        if tmp.exists() {
+            search_dirs.push(tmp);
+        }
+    }
+
+    // 2. Standard user downloads directories
+    let def_inc = super::config::get_default_incoming_dir();
+    if def_inc.exists() && !search_dirs.contains(&def_inc) {
+        search_dirs.push(def_inc);
+    }
+    let def_tmp = super::config::get_default_temp_dir();
+    if def_tmp.exists() && !search_dirs.contains(&def_tmp) {
+        search_dirs.push(def_tmp);
+    }
+
+    // 3. Fallbacks for eMule / legacy paths if they exist
+    if let Ok(userprofile) = std::env::var("USERPROFILE") {
+        let emule_inc = PathBuf::from(&userprofile).join("Downloads").join("eMule").join("Incoming");
+        if emule_inc.exists() && !search_dirs.contains(&emule_inc) {
+            search_dirs.push(emule_inc);
+        }
+        let emule_tmp = PathBuf::from(&userprofile).join("Downloads").join("eMule").join("Temp");
+        if emule_tmp.exists() && !search_dirs.contains(&emule_tmp) {
+            search_dirs.push(emule_tmp);
+        }
+    }
+    let legacy_backup = PathBuf::from(r"D:\Backup\Pendiente");
+    if legacy_backup.exists() && !search_dirs.contains(&legacy_backup) {
+        search_dirs.push(legacy_backup);
+    }
 
     let norm_query = normalize_for_search(&decoded_name);
     let query_words: Vec<&str> = norm_query.split_whitespace().filter(|w| w.len() >= 3).collect();
