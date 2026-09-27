@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="src-tauri/icons/icon.png" alt="TauriMule Logo" width="160" height="160" />
+
 # ⚡ TauriMule
 
 **Next-Generation Desktop Client for the aMule P2P Daemon**  
@@ -43,10 +45,14 @@
 **TauriMule** merges the mythological strength, speed, and safety of the **Taurus** (Tauri v2 + native Rust IPC) with the endurance and alert ears of the **Mule** (eDonkey2000 and Kademlia networks).
 
 It features a **Dynamic Stateful Brand Logo** that reacts in real-time to your network and transfer conditions:
-- 🔵 **Connected (High ID)**: Idle network with established eD2k/Kad connection.
-- 🟢 **Downloading**: Active traffic in progress (color dynamically pulses with transfer throughput).
-- 🟡 **Warning**: Kad Firewalled or Low ID detected on your router.
-- ⚫ **Idle / Disconnected**: Standby or disconnected from `amuled`.
+
+<div align="center">
+
+| 🔵 Connected (High ID) | 🟢 Downloading | 🟡 Warning (Low ID) | ⚫ Idle / Standby |
+| :---: | :---: | :---: | :---: |
+| <img src="public/logo-connected.svg" width="96" height="96" /><br><sub>**High ID / Server**</sub> | <img src="public/logo-downloading.svg" width="96" height="96" /><br><sub>**Active Transfer**</sub> | <img src="public/logo-warning.svg" width="96" height="96" /><br><sub>**Kad Firewalled**</sub> | <img src="public/logo-idle.svg" width="96" height="96" /><br><sub>**Disconnected**</sub> |
+
+</div>
 
 ---
 
