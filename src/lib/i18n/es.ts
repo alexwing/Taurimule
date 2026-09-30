@@ -38,7 +38,7 @@ const es: Dict = {
     settings: "Configuración",
     preferences: "Ajustes",
     minimizeToTray: "Minimizar a bandeja",
-    version: "v0.1.0",
+    version: "v0.1.1",
   },
   downloads: {
     title: "Cola de Descargas",
@@ -85,6 +85,8 @@ const es: Dict = {
     batchAdding: "Añadiendo {{count}} descargas a la cola...",
     hideCompleted: "Ocultar descargados",
     hideCompletedDesc: "Ocultar archivos completados y mostrar solo las descargas activas o en pausa",
+    openFolder: "Carpeta de descargas",
+    openFolderTitle: "Abrir carpeta de descargas en el Explorador de archivos",
     connectingDaemonTitle: "Conectando al motor aMule...",
     connectingDaemonSub: "Esperando comunicación con amuled para sincronizar la cola de transferencias...",
   },

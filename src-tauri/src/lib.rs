@@ -195,6 +195,7 @@ pub fn run() {
             commands::downloads::launch_file,
             commands::downloads::show_in_folder,
             commands::downloads::rename_file,
+            commands::downloads::open_downloads_folder,
             commands::downloads::add_ed2k_link,
             commands::downloads::add_ed2k_links,
             // Uploads

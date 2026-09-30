@@ -1278,6 +1278,9 @@ async function renderDownloadsView(): Promise<string> {
               </span>
             </div>
           </label>
+          <button id="btn-open-downloads-folder" class="btn btn-secondary" style="display: flex; align-items: center; gap: 6px; font-weight: 500; padding: 6px 12px; white-space: nowrap;" title="${t("downloads.openFolderTitle")}">
+            <span>📁</span> <span>${t("downloads.openFolder")}</span>
+          </button>
           <button id="btn-add-ed2k" class="btn btn-primary" style="display: flex; align-items: center; gap: 6px; font-weight: 600; padding: 6px 14px; white-space: nowrap;">
             <span>➕</span> <span>${t("downloads.addEd2kLink")}</span>
           </button>
@@ -2560,6 +2563,15 @@ function attachEventListeners() {
   // Paste / Add eD2k Link buttons
   document.getElementById("btn-add-ed2k")?.addEventListener("click", () => openAddEd2kModalWithClipboardCheck());
   document.getElementById("btn-empty-add-ed2k")?.addEventListener("click", () => openAddEd2kModalWithClipboardCheck());
+
+  // Open Downloads Folder
+  document.getElementById("btn-open-downloads-folder")?.addEventListener("click", async () => {
+    try {
+      await api.openDownloadsFolder();
+    } catch (err) {
+      showToast(`⚠️ Error: ${err}`);
+    }
+  });
 
   // Sortable column headers in Downloads
   document.querySelectorAll("[data-sort-dl]").forEach((th) => {

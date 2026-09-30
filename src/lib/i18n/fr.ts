@@ -38,7 +38,7 @@ const fr: Dict = {
     settings: "Paramètres",
     preferences: "Préférences",
     minimizeToTray: "Réduire dans la zone de notification",
-    version: "v0.1.0",
+    version: "v0.1.1",
   },
   downloads: {
     title: "File de Téléchargement",
@@ -85,6 +85,8 @@ const fr: Dict = {
     batchAdding: "Ajout de {{count}} téléchargements à la file...",
     hideCompleted: "Masquer les terminés",
     hideCompletedDesc: "Masquer les fichiers terminés et n'afficher que les téléchargements actifs",
+    openFolder: "Dossier de téléchargements",
+    openFolderTitle: "Ouvrir le dossier de téléchargements dans l'Explorateur de fichiers",
     connectingDaemonTitle: "Connexion au moteur aMule...",
     connectingDaemonSub: "En attente de communication avec le démon amuled pour charger les transferts...",
   },

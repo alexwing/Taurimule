@@ -307,6 +307,125 @@ fn save_servers_to_file(servers: &[RealServer]) {
     let _ = fs::write(statics_path, out);
 }
 
+fn url_decode(s: &str) -> String {
+    let mut res = String::new();
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(hex_val) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                let mut seq = vec![hex_val];
+                let mut j = i + 3;
+                while j + 2 < bytes.len() && bytes[j] == b'%' {
+                    if let Ok(b) = u8::from_str_radix(&s[j + 1..j + 3], 16) {
+                        seq.push(b);
+                        j += 3;
+                    } else {
+                        break;
+                    }
+                }
+                if let Ok(decoded_str) = std::str::from_utf8(&seq) {
+                    res.push_str(decoded_str);
+                    i = j;
+                    continue;
+                } else {
+                    res.push(hex_val as char);
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+        res.push(bytes[i] as char);
+        i += 1;
+    }
+    res
+}
+
+fn normalize_name(s: &str) -> String {
+    let decoded = url_decode(s).to_lowercase();
+    let mut cleaned = String::new();
+    for c in decoded.chars() {
+        if c.is_alphanumeric() {
+            cleaned.push(c);
+        } else {
+            cleaned.push(' ');
+        }
+    }
+    cleaned.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn read_placeholder_original_name(path: &Path) -> Option<String> {
+    if let Ok(meta) = fs::metadata(path) {
+        if meta.len() < 2048 {
+            if let Ok(content) = fs::read_to_string(path) {
+                for line in content.lines() {
+                    let trimmed = line.trim();
+                    if let Some(rest) = trimmed.strip_prefix("TauriMule downloaded file:") {
+                        let name = rest.trim();
+                        if !name.is_empty() {
+                            return Some(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn matches_download(candidate_name: &str, candidate_path: &Path, d_name: &str, d_size: u64) -> bool {
+    // 1. Exact match (case insensitive)
+    if candidate_name.eq_ignore_ascii_case(d_name) {
+        return true;
+    }
+    // 2. URL decode match
+    let decoded_d = url_decode(d_name);
+    let decoded_c = url_decode(candidate_name);
+    if decoded_c.eq_ignore_ascii_case(&decoded_d) || candidate_name.eq_ignore_ascii_case(&decoded_d) {
+        return true;
+    }
+    // 3. Placeholder content check
+    if let Some(orig) = read_placeholder_original_name(candidate_path) {
+        if orig.eq_ignore_ascii_case(d_name) || orig.eq_ignore_ascii_case(&decoded_d) {
+            return true;
+        }
+        let norm_orig = normalize_name(&orig);
+        let norm_d = normalize_name(d_name);
+        if norm_orig == norm_d && !norm_orig.is_empty() {
+            return true;
+        }
+    }
+    // 4. Normalized words match
+    let norm_c = normalize_name(candidate_name);
+    let norm_d = normalize_name(d_name);
+    if !norm_c.is_empty() && !norm_d.is_empty() {
+        if norm_c == norm_d {
+            return true;
+        }
+        let words_c: Vec<&str> = norm_c.split_whitespace().filter(|w| w.len() >= 3 && *w != "mkv" && *w != "avi" && *w != "mp4").collect();
+        let words_d: Vec<&str> = norm_d.split_whitespace().filter(|w| w.len() >= 3 && *w != "mkv" && *w != "avi" && *w != "mp4").collect();
+        if words_c.len() >= 2 && words_d.len() >= 2 {
+            let (shorter, longer) = if words_c.len() <= words_d.len() { (&words_c, &words_d) } else { (&words_d, &words_c) };
+            if shorter.iter().all(|w| longer.contains(w)) {
+                return true;
+            }
+        }
+    }
+    // 5. Size match if real file (> 1KB) and at least 2 significant words match
+    if d_size > 1024 {
+        if let Ok(meta) = fs::metadata(candidate_path) {
+            if meta.len() == d_size && meta.len() > 1024 {
+                let words_c: Vec<&str> = norm_c.split_whitespace().filter(|w| w.len() >= 3).collect();
+                let words_d: Vec<&str> = norm_d.split_whitespace().filter(|w| w.len() >= 3).collect();
+                if words_c.iter().any(|w| words_d.contains(w)) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 fn load_real_downloads() -> Vec<RealDownload> {
     let mut list = Vec::new();
     let (incoming_dir, temp_dir) = get_configured_dirs();
@@ -384,34 +503,88 @@ fn load_real_downloads() -> Vec<RealDownload> {
 
     // 2. Scan completed files from user's configured Incoming folder
     if let Ok(entries) = fs::read_dir(&incoming_dir) {
-        for entry in entries.flatten() {
-            if let Ok(meta) = entry.metadata() {
+        let mut disk_files: Vec<(String, PathBuf, u64)> = entries
+            .flatten()
+            .filter_map(|e| {
+                let meta = e.metadata().ok()?;
                 if meta.is_file() {
-                    let file_name = entry.file_name().to_string_lossy().to_string();
-                    let size_total = meta.len();
-                    let mut hash = [0u8; 16];
-                    for (i, b) in file_name.bytes().enumerate() {
-                        hash[i % 16] = hash[i % 16].wrapping_add(b);
+                    Some((e.file_name().to_string_lossy().to_string(), e.path(), meta.len()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Sort so real/larger files come before small placeholder files
+        disk_files.sort_by(|a, b| b.2.cmp(&a.2));
+
+        let mut matched_disk_files: Vec<String> = Vec::new();
+
+        // First pass: match disk files against downloads loaded from downloads.txt
+        for d in list.iter_mut() {
+            if let Some((fname, fpath, _fsize)) = disk_files.iter().find(|(name, path, _size)| {
+                !matched_disk_files.contains(name) && matches_download(name, path, &d.name, d.size_total)
+            }) {
+                d.name = fname.clone();
+                d.status = 8;
+                d.size_done = d.size_total;
+                d.speed = 0;
+                matched_disk_files.push(fname.clone());
+            } else if d.status == 8 {
+                d.status = 0;
+                d.size_done = 0;
+                d.speed = 0;
+            }
+        }
+
+        // Second pass: for any remaining disk file that was NOT matched to a download item
+        for (fname, fpath, fsize) in &disk_files {
+            if matched_disk_files.contains(fname) {
+                continue;
+            }
+
+            // If this is a small placeholder whose original name or clean name matches an item already in list, ignore/delete it
+            if *fsize < 1024 {
+                if let Some(orig) = read_placeholder_original_name(fpath) {
+                    if list.iter().any(|d| d.name == orig || matches_download(fname, fpath, &d.name, d.size_total)) {
+                        let _ = fs::remove_file(fpath);
+                        continue;
                     }
-                    let hash_hex: String = hash.iter().map(|b| format!("{:02X}", b)).collect();
-                    list.push(RealDownload {
-                        name: file_name,
-                        hash,
-                        hash_hex,
-                        size_total,
-                        size_done: size_total,
-                        status: 8, // Complete
-                        speed: 0,
-                        priority: 1,
-                        sources_total: 0,
-                        sources_xfer: 0,
-                    });
                 }
             }
+
+            let mut hash = [0u8; 16];
+            for (i, b) in fname.bytes().enumerate() {
+                hash[i % 16] = hash[i % 16].wrapping_add(b);
+            }
+            let hash_hex: String = hash.iter().map(|b| format!("{:02X}", b)).collect();
+            list.push(RealDownload {
+                name: fname.clone(),
+                hash,
+                hash_hex,
+                size_total: *fsize,
+                size_done: *fsize,
+                status: 8, // Complete
+                speed: 0,
+                priority: 1,
+                sources_total: 0,
+                sources_xfer: 0,
+            });
+            matched_disk_files.push(fname.clone());
         }
     }
 
-    list
+    // Deduplicate list by lowercase name
+    let mut unique_list = Vec::new();
+    let mut seen_names = std::collections::HashSet::new();
+    for d in list {
+        let key = d.name.to_lowercase();
+        if seen_names.insert(key) {
+            unique_list.push(d);
+        }
+    }
+
+    unique_list
 }
 
 fn save_downloads_state(list: &[RealDownload]) {
@@ -565,10 +738,23 @@ fn handle_client(
                         if d.size_done >= d.size_total {
                             d.status = 8; // Completed!
                             d.speed = 0;
-                            // Ensure file is written to incoming directory
+                            // Ensure file is written to incoming directory ONLY IF no matching file exists!
                             let (incoming_dir, _) = get_configured_dirs();
-                            let completed_path = incoming_dir.join(&d.name);
-                            if !completed_path.exists() {
+                            let mut already_exists = incoming_dir.join(&d.name).exists();
+                            if !already_exists {
+                                if let Ok(entries) = fs::read_dir(&incoming_dir) {
+                                    for entry in entries.flatten() {
+                                        let efname = entry.file_name().to_string_lossy().to_string();
+                                        if matches_download(&efname, &entry.path(), &d.name, d.size_total) {
+                                            d.name = efname;
+                                            already_exists = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            if !already_exists {
+                                let completed_path = incoming_dir.join(&d.name);
                                 let _ = fs::write(&completed_path, format!("TauriMule downloaded file: {}\nSize: {} bytes", d.name, d.size_total));
                             }
                         }
@@ -626,8 +812,90 @@ fn handle_client(
                 send_packet(&mut stream, 0x01, &[]);
             }
             EC_OP_GET_DLOAD_QUEUE if authenticated => {
+                let (incoming_dir, _) = get_configured_dirs();
+                let mut d_list = downloads.lock().unwrap();
+
+                if let Ok(entries) = fs::read_dir(&incoming_dir) {
+                    let disk_files: Vec<(String, PathBuf, u64)> = entries
+                        .flatten()
+                        .filter_map(|e| {
+                            let meta = e.metadata().ok()?;
+                            if meta.is_file() {
+                                Some((e.file_name().to_string_lossy().to_string(), e.path(), meta.len()))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+
+                    // 1. Sync completed downloads with disk files (handle rename in Explorer)
+                    for d in d_list.iter_mut() {
+                        if d.status == 8 {
+                            let current_path = incoming_dir.join(&d.name);
+                            if !current_path.exists() {
+                                // Find renamed file in incoming_dir
+                                if let Some((new_name, _, _)) = disk_files.iter().find(|(name, path, _size)| {
+                                    matches_download(name, path, &d.name, d.size_total)
+                                }) {
+                                    println!("[amuled] Syncing renamed completed file: '{}' -> '{}'", d.name, new_name);
+                                    d.name = new_name.clone();
+                                }
+                            }
+                        }
+                    }
+
+                    // 2. Remove completed downloads that are completely gone from disk
+                    d_list.retain(|d| {
+                        if d.status == 8 {
+                            incoming_dir.join(&d.name).exists()
+                        } else {
+                            true
+                        }
+                    });
+
+                    // 3. Add any new completed files from disk not yet in d_list
+                    for (fname, fpath, fsize) in &disk_files {
+                        // Skip redundant small placeholders
+                        if *fsize < 1024 {
+                            if let Some(orig) = read_placeholder_original_name(fpath) {
+                                if d_list.iter().any(|d| d.name == orig || matches_download(fname, fpath, &d.name, d.size_total)) {
+                                    let _ = fs::remove_file(fpath);
+                                    continue;
+                                }
+                            }
+                        }
+
+                        let exists_in_list = d_list.iter().any(|d| {
+                            d.name.eq_ignore_ascii_case(fname)
+                                || matches_download(fname, fpath, &d.name, d.size_total)
+                        });
+                        if !exists_in_list {
+                            let mut hash = [0u8; 16];
+                            for (i, b) in fname.bytes().enumerate() {
+                                hash[i % 16] = hash[i % 16].wrapping_add(b);
+                            }
+                            let hash_hex: String = hash.iter().map(|b| format!("{:02X}", b)).collect();
+                            d_list.push(RealDownload {
+                                name: fname.clone(),
+                                hash,
+                                hash_hex,
+                                size_total: *fsize,
+                                size_done: *fsize,
+                                status: 8,
+                                speed: 0,
+                                priority: 1,
+                                sources_total: 0,
+                                sources_xfer: 0,
+                            });
+                        }
+                    }
+                }
+
+                // 4. Deduplicate d_list by lowercase name
+                let mut seen = std::collections::HashSet::new();
+                d_list.retain(|d| seen.insert(d.name.to_lowercase()));
+
                 let mut dload_tags = Vec::new();
-                let d_list = downloads.lock().unwrap();
                 for d in d_list.iter() {
                     let mut dtag = Vec::new();
                     let d_children = vec![

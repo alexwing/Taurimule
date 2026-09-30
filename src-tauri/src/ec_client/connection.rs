@@ -34,7 +34,7 @@ impl EcConnection {
         // Step 1: Send EC_OP_AUTH_REQ
         let mut auth_req = EcPacket::new(EC_OP_AUTH_REQ);
         auth_req.add_tag(EcTag::new_string(EC_TAG_AUTH_CLIENT_NAME, "TauriMule"));
-        auth_req.add_tag(EcTag::new_string(EC_TAG_CLIENT_VERSION, "0.1.0"));
+        auth_req.add_tag(EcTag::new_string(EC_TAG_CLIENT_VERSION, "0.1.1"));
         auth_req.add_tag(EcTag::new_u16(EC_TAG_PROTOCOL_VERSION, EC_PROTOCOL_VERSION));
         auth_req.add_tag(EcTag::new_u64(EC_TAG_CAN_ZLIB, 1));
 

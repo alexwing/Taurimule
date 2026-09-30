@@ -9,7 +9,22 @@ pub async fn get_download_queue(
 ) -> Result<Vec<DownloadInfo>, String> {
     let mut ec = state.ec.lock().await;
     let conn = ec.as_mut().ok_or("Not connected to amuled")?;
-    conn.get_download_queue().await
+    let mut items = conn.get_download_queue().await?;
+
+    // Enhance completed items with actual filename on disk if renamed
+    for item in items.iter_mut() {
+        if item.status == "Complete" || item.progress >= 1.0 {
+            if let Some(target) = resolve_download_file(&item.name, Some(&item.hash), None) {
+                if let Some(fname) = target.file_name().and_then(|f| f.to_str()) {
+                    if fname != item.name {
+                        item.name = fname.to_string();
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(items)
 }
 
 #[tauri::command]
@@ -460,6 +475,24 @@ pub fn launch_file(
 }
 
 #[tauri::command]
+pub fn open_downloads_folder() -> Result<(), String> {
+    let folder = if let Ok(config) = super::config::get_config() {
+        PathBuf::from(config.incoming_dir)
+    } else {
+        super::config::get_default_incoming_dir()
+    };
+    let _ = std::fs::create_dir_all(&folder);
+    #[cfg(windows)]
+    {
+        open::that(&folder).map_err(|e| format!("Failed to open downloads folder: {}", e))
+    }
+    #[cfg(not(windows))]
+    {
+        open::that(&folder).map_err(|e| format!("Failed to open downloads folder: {}", e))
+    }
+}
+
+#[tauri::command]
 pub fn show_in_folder(
     name: Option<String>,
     hash: Option<String>,
@@ -479,8 +512,14 @@ pub fn show_in_folder(
             return Ok(());
         }
 
+        let default_incoming = if let Ok(config) = super::config::get_config() {
+            PathBuf::from(config.incoming_dir)
+        } else {
+            super::config::get_default_incoming_dir()
+        };
+        let _ = std::fs::create_dir_all(&default_incoming);
         Command::new("explorer")
-            .arg(r"D:\Backup\Pendiente")
+            .arg(default_incoming.to_string_lossy().to_string())
             .spawn()
             .map_err(|e| format!("Failed to open incoming folder: {}", e))?;
 
@@ -494,7 +533,7 @@ pub fn show_in_folder(
 }
 
 /// eMule Rename Flow: Renames the download object in eMule's queue by hash via EC protocol,
-/// and renames the physical completed file on disk in D:\Backup\Pendiente if present.
+/// and renames the physical completed file on disk in incoming_dir if present.
 #[tauri::command]
 pub async fn rename_file(
     state: State<'_, AppState>,
@@ -523,7 +562,12 @@ pub async fn rename_file(
     #[cfg(windows)]
     {
         use std::fs;
-        let incoming_dir = Path::new(r"D:\Backup\Pendiente");
+        let incoming_dir_buf = if let Ok(config) = super::config::get_config() {
+            PathBuf::from(config.incoming_dir)
+        } else {
+            super::config::get_default_incoming_dir()
+        };
+        let incoming_dir = incoming_dir_buf.as_path();
 
         let mut found_file: Option<PathBuf> = None;
         if let Some(ref oname) = old_name {

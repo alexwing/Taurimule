@@ -38,7 +38,7 @@ const de: Dict = {
     settings: "Einstellungen",
     preferences: "Einstellungen",
     minimizeToTray: "In den Infobereich minimieren",
-    version: "v0.1.0",
+    version: "v0.1.1",
   },
   downloads: {
     title: "Download-Warteschlange",
@@ -85,6 +85,8 @@ const de: Dict = {
     batchAdding: "{{count}} Downloads werden zur Warteschlange hinzugefügt...",
     hideCompleted: "Abgeschlossene ausblenden",
     hideCompletedDesc: "Abgeschlossene Dateien ausblenden und nur aktive Downloads anzeigen",
+    openFolder: "Download-Ordner",
+    openFolderTitle: "Download-Ordner im Datei-Explorer öffnen",
     connectingDaemonTitle: "Verbindung zur aMule-Engine wird hergestellt...",
     connectingDaemonSub: "Warte auf Kommunikation mit dem amuled-Dienst, um die Warteschlange zu laden...",
   },

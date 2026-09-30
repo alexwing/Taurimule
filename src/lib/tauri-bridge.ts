@@ -122,6 +122,7 @@ export const api = {
   // File Operations (Windows Explorer & Default Player)
   launchFile: (name: string, hash?: string, path?: string) => invoke<void>('launch_file', { name, hash, path }),
   showInFolder: (name?: string, hash?: string, path?: string) => invoke<void>('show_in_folder', { name, hash, path }),
+  openDownloadsFolder: () => invoke<void>('open_downloads_folder'),
   renameFile: (hash: string, newName: string, oldName?: string) => invoke<string>('rename_file', { hash, newName, oldName }),
   addEd2kLink: (link: string, cleanName?: string) => invoke<DownloadInfo>('add_ed2k_link', { link, cleanName }),
   addEd2kLinks: (items: AddEd2kItem[]) => invoke<DownloadInfo[]>('add_ed2k_links', { items }),

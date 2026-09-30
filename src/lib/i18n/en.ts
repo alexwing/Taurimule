@@ -36,7 +36,7 @@ const en = {
     settings: "Settings",
     preferences: "Preferences",
     minimizeToTray: "Minimize to tray",
-    version: "v0.1.0",
+    version: "v0.1.1",
   },
   downloads: {
     title: "Download Queue",
@@ -83,6 +83,8 @@ const en = {
     batchAdding: "Adding {{count}} downloads to queue...",
     hideCompleted: "Hide completed",
     hideCompletedDesc: "Hide completed files and only show active or paused downloads",
+    openFolder: "Downloads folder",
+    openFolderTitle: "Open downloads folder in File Explorer",
     connectingDaemonTitle: "Connecting to aMule engine...",
     connectingDaemonSub: "Waiting for amuled daemon to sync your transfer queue...",
   },
