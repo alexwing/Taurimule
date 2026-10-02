@@ -37,6 +37,7 @@ const EC_OP_GET_ULOAD_QUEUE: u8 = 0x0E;
 const EC_OP_ULOAD_QUEUE: u8 = 0x20;
 const EC_OP_PARTFILE_PAUSE: u8 = 0x19;
 const EC_OP_PARTFILE_RESUME: u8 = 0x1A;
+const EC_OP_PARTFILE_PRIO_SET: u8 = 0x1C;
 const EC_OP_PARTFILE_DELETE: u8 = 0x1D;
 const EC_OP_RENAME_FILE: u8 = 0x25;
 const EC_OP_SEARCH_START: u8 = 0x26;
@@ -480,6 +481,8 @@ fn load_real_downloads() -> Vec<RealDownload> {
                             0
                         };
 
+                        let prio_from_line = line.split('\t').nth(2).and_then(|p| p.trim().parse::<u8>().ok()).unwrap_or(1);
+
                         list.push(RealDownload {
                             name,
                             hash,
@@ -488,7 +491,7 @@ fn load_real_downloads() -> Vec<RealDownload> {
                             size_done,
                             status,
                             speed,
-                            priority: 1,
+                            priority: prio_from_line,
                             sources_total: 45 + ((list.len() as u32 * 7) % 60),
                             sources_xfer: if speed > 0 { 8 } else { 0 },
                         });
@@ -594,8 +597,8 @@ fn save_downloads_state(list: &[RealDownload]) {
     for d in list {
         if d.status != 8 {
             out.push_str(&format!(
-                "001.part\ted2k://|file|{}|{}|{}|/\r\n",
-                d.name, d.size_total, d.hash_hex
+                "001.part\ted2k://|file|{}|{}|{}|/\t{}\r\n",
+                d.name, d.size_total, d.hash_hex, d.priority
             ));
         }
     }
@@ -945,6 +948,35 @@ fn handle_client(
                     if payload.windows(16).any(|w| w == d.hash) {
                         d.status = 1; // Downloading
                         d.speed = 135_000;
+                        break;
+                    }
+                }
+                save_downloads_state(&d_list);
+                send_packet(&mut stream, 0x01, &[]);
+            }
+            EC_OP_PARTFILE_PRIO_SET => {
+                let mut d_list = downloads.lock().unwrap();
+                for d in d_list.iter_mut() {
+                    if payload.windows(16).any(|w| w == d.hash) {
+                        let mut new_prio = None;
+                        if let Some(pos) = payload.windows(2).position(|w| w == [0x06, 0x10]) {
+                            if pos + 7 < payload.len() {
+                                new_prio = Some(payload[pos + 7]);
+                            }
+                        }
+                        let prio = new_prio.unwrap_or_else(|| {
+                            payload.last().copied().unwrap_or(1)
+                        });
+                        println!("[amuled] Set priority of '{}' to {}", d.name, prio);
+                        d.priority = prio;
+                        if d.status == 1 {
+                            d.speed = match prio {
+                                0 => 25_000,
+                                1 => 135_000,
+                                2 => 450_000,
+                                _ => 180_000,
+                            };
+                        }
                         break;
                     }
                 }

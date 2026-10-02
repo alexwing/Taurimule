@@ -14,6 +14,7 @@ import { ThemeManager, type ColorScheme } from "./lib/theme";
 import { t, I18nManager, type LanguageSetting } from "./lib/i18n";
 import { cleanFilename, renderDiffHtml } from "./lib/filename-cleaner";
 import { showContextMenu, type ContextMenuItem } from "./lib/context-menu";
+import { listen } from "@tauri-apps/api/event";
 
 type ViewName = "downloads" | "servers" | "search" | "uploads" | "settings";
 
@@ -1366,6 +1367,7 @@ async function renderDownloadsView(): Promise<string> {
                   data-name="${encodeURIComponent(d.name)}" 
                   data-status="${d.status}" 
                   data-size="${d.size_total}"
+                  data-priority="${d.priority}"
                   title="${d.status === "Complete" ? "Doble clic para lanzar | Clic derecho para opciones" : "Clic derecho para opciones"}"
                 >
                   <td>
@@ -1373,7 +1375,7 @@ async function renderDownloadsView(): Promise<string> {
                       <span class="file-icon">${getFileIcon(d.name)}</span>
                       <div class="file-info-stack">
                         <div class="file-name-text" title="${d.name}">${d.name}</div>
-                        <div class="file-sub-meta">${t("downloads.hash")}: ${d.hash.substring(0, 12)}... | ${t("downloads.fileStatus")}: ${d.status}</div>
+                        <div class="file-sub-meta">${t("downloads.hash")}: ${d.hash.substring(0, 12)}... | ${t("downloads.fileStatus")}: ${d.status} | ${t("contextMenu.priority")}: <strong>${d.priority}</strong></div>
                       </div>
                     </div>
                   </td>
@@ -1855,6 +1857,13 @@ async function renderSettingsView(): Promise<string> {
     console.warn("Could not load config:", e);
   }
 
+  let isEd2kAssoc = false;
+  try {
+    isEd2kAssoc = await api.isEd2kAssociated();
+  } catch (e) {
+    console.warn("Could not check ed2k association:", e);
+  }
+
   return `
     ${renderHeader(t("settings.title"), t("settings.subtitle"), t("nav.settings"))}
     
@@ -1899,6 +1908,43 @@ async function renderSettingsView(): Promise<string> {
             <option value="fr" ${currentLang === "fr" ? "selected" : ""}>🇫🇷 Français</option>
             <option value="de" ${currentLang === "de" ? "selected" : ""}>🇩🇪 Deutsch</option>
           </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- eD2k Protocol Association Card -->
+    <div class="table-container" style="padding: 24px; max-width: 850px; margin-bottom: 20px;">
+      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px; margin-bottom: 16px;">
+        <div>
+          <h3 style="font-size: 16px; font-weight: 700; margin: 0; display: flex; align-items: center; gap: 8px;">
+            <span>🔗</span>
+            <span>${t("settings.ed2kAssociationTitle")}</span>
+          </h3>
+          <p style="color: var(--text-secondary); font-size: 12px; margin-top: 4px; margin-bottom: 0;">
+            ${t("settings.ed2kAssociationSubtitle")}
+          </p>
+        </div>
+      </div>
+
+      <div class="metric-card" style="padding: 16px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;">
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <span style="font-size: 22px;">${isEd2kAssoc ? "🟢" : "⚪"}</span>
+          <div>
+            <div style="font-weight: 600; font-size: 13px; color: var(--text-primary);">
+              ${isEd2kAssoc ? t("settings.ed2kAssociated") : t("settings.ed2kNotAssociated")}
+            </div>
+            <div style="font-size: 11.5px; color: var(--text-secondary); margin-top: 2px;">
+              Protocol: <code style="font-family: var(--font-mono);">ed2k://</code> (Windows Registry)
+            </div>
+          </div>
+        </div>
+
+        <div>
+          ${
+            isEd2kAssoc
+              ? `<button class="btn btn-secondary btn-sm" id="btn-unassociate-ed2k" style="font-weight: 600;">✕ ${t("settings.btnUnassociateEd2k")}</button>`
+              : `<button class="btn btn-primary btn-sm" id="btn-associate-ed2k" style="font-weight: 600;">🔗 ${t("settings.btnAssociateEd2k")}</button>`
+          }
         </div>
       </div>
     </div>
@@ -2532,6 +2578,27 @@ function attachEventListeners() {
     }
   });
 
+  // eD2k Association Buttons
+  document.getElementById("btn-associate-ed2k")?.addEventListener("click", async () => {
+    try {
+      await api.registerEd2kAssociation();
+      showToast(`🔗 ${t("settings.ed2kAssociatedSuccess")}`);
+      await renderView();
+    } catch (err) {
+      showToast(`⚠️ ${err}`);
+    }
+  });
+
+  document.getElementById("btn-unassociate-ed2k")?.addEventListener("click", async () => {
+    try {
+      await api.unregisterEd2kAssociation();
+      showToast(`ℹ️ ${t("settings.ed2kUnassociatedSuccess")}`);
+      await renderView();
+    } catch (err) {
+      showToast(`⚠️ ${err}`);
+    }
+  });
+
   // Theme select in Settings
   document.getElementById("select-theme")?.addEventListener("change", (e) => {
     const val = (e.target as HTMLSelectElement).value as ColorScheme;
@@ -2898,6 +2965,7 @@ function attachEventListeners() {
     const hash = el.dataset.hash || "";
     const status = el.dataset.status || "";
     const size = parseInt(el.dataset.size || "0");
+    const priority = el.dataset.priority || "Normal";
 
     // Double-click to launch if Complete, or show in folder
     el.addEventListener("dblclick", async (e) => {
@@ -2970,6 +3038,49 @@ function attachEventListeners() {
               }
             });
           },
+        },
+        {
+          label: t("contextMenu.priority"),
+          icon: "⚡",
+          disabled: status === "Complete",
+          children: [
+            {
+              label: `${t("contextMenu.priorityAuto")} ${priority.toLowerCase() === "auto" ? "✓" : ""}`,
+              icon: "🔄",
+              onClick: async () => {
+                await api.setDownloadPriority(hash, 3);
+                showToast(t("contextMenu.prioritySet", { prio: t("contextMenu.priorityAuto") }));
+                await renderView();
+              },
+            },
+            {
+              label: `${t("contextMenu.priorityHigh")} ${priority.toLowerCase() === "high" ? "✓" : ""}`,
+              icon: "🔺",
+              onClick: async () => {
+                await api.setDownloadPriority(hash, 2);
+                showToast(t("contextMenu.prioritySet", { prio: t("contextMenu.priorityHigh") }));
+                await renderView();
+              },
+            },
+            {
+              label: `${t("contextMenu.priorityNormal")} ${priority.toLowerCase() === "normal" ? "✓" : ""}`,
+              icon: "➖",
+              onClick: async () => {
+                await api.setDownloadPriority(hash, 1);
+                showToast(t("contextMenu.prioritySet", { prio: t("contextMenu.priorityNormal") }));
+                await renderView();
+              },
+            },
+            {
+              label: `${t("contextMenu.priorityLow")} ${priority.toLowerCase() === "low" ? "✓" : ""}`,
+              icon: "🔻",
+              onClick: async () => {
+                await api.setDownloadPriority(hash, 0);
+                showToast(t("contextMenu.prioritySet", { prio: t("contextMenu.priorityLow") }));
+                await renderView();
+              },
+            },
+          ],
         },
         "divider",
         {
@@ -3155,9 +3266,6 @@ function updateFooter(stats: GlobalStats | null) {
       <div class="footer-item">eD2k: ${ed2kStatus}</div>
       <span class="footer-sep">|</span>
       <div class="footer-item">Kad: ${kadStatus}</div>
-    </div>
-    <div class="footer-actions">
-      <span>🗕 ${t("nav.minimizeToTray")}</span>
     </div>`;
 }
 
@@ -3231,10 +3339,6 @@ function renderAppShell() {
             <span>${themeIcon}</span>
             <span style="flex: 1; text-align: left;">${themeLabel}</span>
           </button>
-          <div class="tray-hint">
-            <span>🗕</span>
-            <span>${t("nav.minimizeToTray")}</span>
-          </div>
           <div>TauriMule ${t("nav.version")}</div>
         </div>
       </nav>
@@ -3383,5 +3487,13 @@ window.addEventListener("paste", (e: ClipboardEvent) => {
   if (pasted.includes("ed2k://|file|")) {
     e.preventDefault();
     showAddEd2kModal(pasted.trim());
+  }
+});
+
+// Deep link listener: catch ed2k:// links launched from browser / protocol handler
+listen<string>("ed2k-link-received", (event) => {
+  const link = event.payload;
+  if (link && link.startsWith("ed2k://")) {
+    showAddEd2kModal(link.trim());
   }
 });

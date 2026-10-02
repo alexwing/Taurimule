@@ -13,7 +13,7 @@ use tauri::{
     image::Image,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, WindowEvent,
+    AppHandle, Emitter, Manager, WindowEvent,
 };
 use tokio::sync::Mutex;
 
@@ -61,14 +61,19 @@ pub fn run() {
         .init();
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
                 let _ = window.unminimize();
                 let _ = window.set_focus();
             }
+            for arg in &args {
+                if arg.starts_with("ed2k://") {
+                    let _ = app.emit("ed2k-link-received", arg.clone());
+                }
+            }
         }))
+        .plugin(tauri_plugin_shell::init())
         .manage(AppState {
             ec: Arc::new(Mutex::new(None)),
             sidecar_pid: Arc::new(Mutex::new(None)),
@@ -142,6 +147,16 @@ pub fn run() {
 
             let handle = app.handle().clone();
 
+            // Check cold start CLI args for ed2k link
+            let cold_ed2k = std::env::args().find(|a| a.starts_with("ed2k://"));
+            if let Some(link) = cold_ed2k {
+                let handle_clone = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+                    let _ = handle_clone.emit("ed2k-link-received", link);
+                });
+            }
+
             // Start amuled sidecar in background on app launch
             tauri::async_runtime::spawn(async move {
                 match sidecar_manager::start_amuled(&handle).await {
@@ -207,6 +222,9 @@ pub fn run() {
             commands::config::import_from_amule,
             commands::config::pick_folder,
             commands::config::open_folder,
+            commands::config::is_ed2k_associated,
+            commands::config::register_ed2k_association,
+            commands::config::unregister_ed2k_association,
         ])
         .run(tauri::generate_context!())
         .expect("error while running TauriMule");

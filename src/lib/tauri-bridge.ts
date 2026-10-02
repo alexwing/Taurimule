@@ -137,6 +137,11 @@ export const api = {
   importFromAmule: (customPath?: string) => invoke<ImportResult>('import_from_amule', { customPath }),
   pickFolder: (title: string, initialPath?: string) => invoke<string | null>('pick_folder', { title, initialPath }),
   openFolder: (path: string) => invoke<void>('open_folder', { path }),
+
+  // Protocol Association
+  isEd2kAssociated: () => invoke<boolean>('is_ed2k_associated'),
+  registerEd2kAssociation: () => invoke<boolean>('register_ed2k_association'),
+  unregisterEd2kAssociation: () => invoke<boolean>('unregister_ed2k_association'),
 };
 
 export interface AddEd2kItem {

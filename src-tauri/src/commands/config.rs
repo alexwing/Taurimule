@@ -496,3 +496,101 @@ pub fn open_folder(path: String) -> Result<(), String> {
     let _ = fs::create_dir_all(&p);
     open::that(&p).map_err(|e| format!("Failed to open folder: {}", e))
 }
+
+/// Check if ed2k:// protocol is registered to TauriMule
+#[tauri::command]
+pub fn is_ed2k_associated() -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+        let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
+        let exe_name = exe_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_lowercase();
+
+        let output = std::process::Command::new("reg")
+            .args(["query", r"HKCU\Software\Classes\ed2k\shell\open\command", "/ve"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+
+        if let Ok(out) = output {
+            let s = String::from_utf8_lossy(&out.stdout).to_lowercase();
+            if !exe_name.is_empty() && s.contains(&exe_name) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(false)
+    }
+}
+
+/// Register ed2k:// protocol handler to TauriMule in HKCU
+#[tauri::command]
+pub fn register_ed2k_association() -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+        let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
+        let exe_str = exe_path.to_string_lossy().to_string();
+
+        let ps_script = format!(
+            r#"$exe = "{}"
+$cmd = "`"$exe`" `"%1`""
+New-Item -Path "HKCU:\Software\Classes\ed2k" -Force | Out-Null
+Set-ItemProperty -Path "HKCU:\Software\Classes\ed2k" -Name "(Default)" -Value "URL:eDonkey2000 Protocol"
+Set-ItemProperty -Path "HKCU:\Software\Classes\ed2k" -Name "URL Protocol" -Value ""
+New-Item -Path "HKCU:\Software\Classes\ed2k\DefaultIcon" -Force | Out-Null
+Set-ItemProperty -Path "HKCU:\Software\Classes\ed2k\DefaultIcon" -Name "(Default)" -Value "$exe,0"
+New-Item -Path "HKCU:\Software\Classes\ed2k\shell\open\command" -Force | Out-Null
+Set-ItemProperty -Path "HKCU:\Software\Classes\ed2k\shell\open\command" -Name "(Default)" -Value $cmd
+"#,
+            exe_str.replace('\\', "\\\\")
+        );
+
+        let status = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &ps_script])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status()
+            .map_err(|e| format!("Failed to register ed2k protocol: {}", e))?;
+
+        Ok(status.success())
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(false)
+    }
+}
+
+/// Unregister ed2k:// protocol handler from HKCU
+#[tauri::command]
+pub fn unregister_ed2k_association() -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+        let ps_script = r#"Remove-Item -Path "HKCU:\Software\Classes\ed2k" -Recurse -Force -ErrorAction SilentlyContinue"#;
+
+        let status = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", ps_script])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status()
+            .map_err(|e| format!("Failed to unregister ed2k protocol: {}", e))?;
+
+        Ok(status.success())
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(false)
+    }
+}
+
