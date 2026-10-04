@@ -518,6 +518,15 @@ impl EcConnection {
         Ok(())
     }
 
+    /// Request more sources / swap A4AF sources to this download.
+    pub async fn request_more_sources(&mut self, hash_hex: &str) -> Result<(), String> {
+        let hash = hex_to_hash16(hash_hex)?;
+        let mut pkt = EcPacket::new(EC_OP_PARTFILE_SWAP_A4AF_THIS);
+        pkt.add_tag(EcTag::new_hash16(EC_TAG_PARTFILE, &hash));
+        self.request(&pkt).await?;
+        Ok(())
+    }
+
     /// Set download priority.
     pub async fn set_download_priority(
         &mut self,

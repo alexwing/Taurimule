@@ -37,7 +37,7 @@ const en = {
     settings: "Settings",
     preferences: "Preferences",
     minimizeToTray: "Minimize to tray",
-    version: "v0.1.3",
+    version: "v0.1.4",
   },
   downloads: {
     title: "Download Queue",
@@ -94,6 +94,10 @@ const en = {
     openFolderTitle: "Open downloads folder in File Explorer",
     connectingDaemonTitle: "Connecting to aMule engine...",
     connectingDaemonSub: "Waiting for amuled daemon to sync your transfer queue...",
+    pendingLabel: "pending",
+    totalBadge: "total",
+    completedCountLabel: "completed",
+    totalCountLabel: "in total",
   },
   servers: {
     title: "eD2K Servers",
@@ -285,6 +289,8 @@ const en = {
     prioritySet: "Priority set to {{prio}}",
     pause: "Pause",
     resume: "Resume",
+    requestMoreSources: "Find more sources",
+    requestMoreSourcesSuccess: "Requesting more sources and seeds from the network...",
     delete: "Delete Download",
   },
   cleaner: {

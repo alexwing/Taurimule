@@ -215,6 +215,16 @@ pub async fn set_download_priority(
     conn.set_download_priority(&hash, priority).await
 }
 
+#[tauri::command]
+pub async fn request_more_sources(
+    state: State<'_, AppState>,
+    hash: String,
+) -> Result<(), String> {
+    let mut ec = state.ec.lock().await;
+    let conn = ec.as_mut().ok_or("Not connected to amuled")?;
+    conn.request_more_sources(&hash).await
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // Helper: Resolve download location on disk
 // ═══════════════════════════════════════════════════════════════════

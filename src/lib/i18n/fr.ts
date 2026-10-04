@@ -39,7 +39,7 @@ const fr: Dict = {
     settings: "Paramètres",
     preferences: "Préférences",
     minimizeToTray: "Réduire dans la zone de notification",
-    version: "v0.1.3",
+    version: "v0.1.4",
   },
   downloads: {
     title: "File de Téléchargement",
@@ -96,6 +96,10 @@ const fr: Dict = {
     openFolderTitle: "Ouvrir le dossier de téléchargements dans l'Explorateur de fichiers",
     connectingDaemonTitle: "Connexion au moteur aMule...",
     connectingDaemonSub: "En attente de communication avec le démon amuled pour charger les transferts...",
+    pendingLabel: "en attente",
+    totalBadge: "total",
+    completedCountLabel: "terminés",
+    totalCountLabel: "au total",
   },
   servers: {
     title: "Serveurs eD2K",
@@ -287,6 +291,8 @@ const fr: Dict = {
     prioritySet: "Priorité définie sur {{prio}}",
     pause: "Mettre en pause",
     resume: "Reprendre",
+    requestMoreSources: "Chercher plus de sources",
+    requestMoreSourcesSuccess: "Demande de sources et de graines supplémentaires sur le réseau...",
     delete: "Supprimer le téléchargement",
   },
   cleaner: {

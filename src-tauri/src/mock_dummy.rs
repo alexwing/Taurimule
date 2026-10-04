@@ -35,6 +35,7 @@ const EC_OP_GET_DLOAD_QUEUE: u8 = 0x0D;
 const EC_OP_DLOAD_QUEUE: u8 = 0x1F;
 const EC_OP_GET_ULOAD_QUEUE: u8 = 0x0E;
 const EC_OP_ULOAD_QUEUE: u8 = 0x20;
+const EC_OP_PARTFILE_SWAP_A4AF_THIS: u8 = 0x16;
 const EC_OP_PARTFILE_PAUSE: u8 = 0x19;
 const EC_OP_PARTFILE_RESUME: u8 = 0x1A;
 const EC_OP_PARTFILE_PRIO_SET: u8 = 0x1C;
@@ -102,6 +103,7 @@ struct RealServer {
 
 #[derive(Clone, Debug)]
 struct RealDownload {
+    part_file: String,
     name: String,
     hash: [u8; 16],
     hash_hex: String,
@@ -187,6 +189,28 @@ fn get_configured_dirs() -> (PathBuf, PathBuf) {
     let _ = fs::create_dir_all(&inc);
     let _ = fs::create_dir_all(&tmp);
     (inc, tmp)
+}
+
+fn get_speed_limits() -> (u32, u32) {
+    let conf_dir = get_config_dir();
+    let conf_path = conf_dir.join("amule.conf");
+    let mut max_dl = 0u32;
+    let mut max_ul = 0u32;
+    if let Ok(content) = fs::read_to_string(&conf_path) {
+        for line in content.lines() {
+            let t = line.trim();
+            if t.starts_with("MaxDownload=") {
+                if let Ok(v) = t["MaxDownload=".len()..].trim().parse::<u32>() {
+                    max_dl = v;
+                }
+            } else if t.starts_with("MaxUpload=") {
+                if let Ok(v) = t["MaxUpload=".len()..].trim().parse::<u32>() {
+                    max_ul = v;
+                }
+            }
+        }
+    }
+    (max_dl * 1024, max_ul * 1024)
 }
 
 fn read_file_lossy(path: &Path) -> String {
@@ -430,9 +454,30 @@ fn matches_download(candidate_name: &str, candidate_path: &Path, d_name: &str, d
 fn load_real_downloads() -> Vec<RealDownload> {
     let mut list = Vec::new();
     let (incoming_dir, temp_dir) = get_configured_dirs();
-
-    // 1. Scan in-progress downloads from downloads.txt or downloads_state.txt
     let config_dir = get_config_dir();
+
+    // Map original hashes to their real part files from downloads.txt
+    let mut original_part_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for p in &[
+        PathBuf::from(r"C:\Users\Windows\AppData\Local\eMule\config\downloads.txt"),
+        PathBuf::from(r"C:\Users\Windows\AppData\Roaming\aMule\downloads.txt"),
+        config_dir.join("downloads.txt"),
+    ] {
+        let content = read_file_lossy(p);
+        for line in content.lines() {
+            if let Some(pos) = line.find("ed2k://|file|") {
+                let part = line[..pos].trim().to_string();
+                let ed2k = &line[pos + 13..];
+                let segs: Vec<&str> = ed2k.split('|').collect();
+                if segs.len() >= 3 && !part.is_empty() {
+                    let hash_hex = segs[2].to_uppercase();
+                    original_part_map.insert(hash_hex, part);
+                }
+            }
+        }
+    }
+
+    // 1. Scan in-progress downloads from downloads_state.txt or downloads.txt
     let state_paths = [
         config_dir.join("downloads_state.txt"),
         config_dir.join("downloads.txt"),
@@ -445,7 +490,7 @@ fn load_real_downloads() -> Vec<RealDownload> {
         if !content.is_empty() {
             for line in content.lines() {
                 if let Some(pos) = line.find("ed2k://|file|") {
-                    let part_file_str = line[..pos].trim();
+                    let raw_part = line[..pos].trim();
                     let ed2k_part = &line[pos + 13..];
                     let segments: Vec<&str> = ed2k_part.split('|').collect();
                     if segments.len() >= 3 {
@@ -454,17 +499,27 @@ fn load_real_downloads() -> Vec<RealDownload> {
                         let hash_hex = segments[2].to_string();
                         let hash = hex_to_16_bytes(&hash_hex);
 
+                        let mut part_file = raw_part.to_string();
+                        let hash_upper = hash_hex.to_uppercase();
+                        if let Some(real_part) = original_part_map.get(&hash_upper) {
+                            if part_file.is_empty() || part_file == "001.part" {
+                                part_file = real_part.clone();
+                            }
+                        }
+
                         let mut size_done = 0u64;
-                        if !part_file_str.is_empty() {
-                            let part_path = temp_dir.join(part_file_str);
+                        if !part_file.is_empty() {
+                            let part_path = temp_dir.join(&part_file);
                             if let Ok(meta) = fs::metadata(&part_path) {
                                 size_done = meta.len();
                             }
                         }
 
+                        let prio_from_line = line.split('\t').nth(2).and_then(|p| p.trim().parse::<u8>().ok()).unwrap_or(1);
+
                         let status = if size_total > 0 && size_done >= size_total {
                             8 // Complete
-                        } else if size_done > 0 {
+                        } else if prio_from_line == 2 || size_done > 0 || list.len() < 15 {
                             1 // Downloading
                         } else {
                             0 // Waiting
@@ -472,18 +527,30 @@ fn load_real_downloads() -> Vec<RealDownload> {
 
                         let speed = if status == 1 {
                             let idx = list.len() as u32;
-                            if idx < 5 {
-                                120_000 + (idx * 25_000)
+                            if prio_from_line == 2 {
+                                2_450_000 + ((idx * 210_000) % 1_500_000)
+                            } else if prio_from_line == 0 {
+                                140_000 + ((idx * 35_000) % 150_000)
                             } else {
-                                45_000
+                                950_000 + ((idx * 145_000) % 950_000)
                             }
                         } else {
                             0
                         };
 
-                        let prio_from_line = line.split('\t').nth(2).and_then(|p| p.trim().parse::<u8>().ok()).unwrap_or(1);
+                        let sources_total = 45 + ((list.len() as u32 * 11) % 85);
+                        let sources_xfer = if status == 1 {
+                            if prio_from_line == 2 {
+                                24 + ((list.len() as u32 * 3) % 15)
+                            } else {
+                                12 + ((list.len() as u32 * 2) % 12)
+                            }
+                        } else {
+                            0
+                        };
 
                         list.push(RealDownload {
+                            part_file,
                             name,
                             hash,
                             hash_hex,
@@ -492,8 +559,8 @@ fn load_real_downloads() -> Vec<RealDownload> {
                             status,
                             speed,
                             priority: prio_from_line,
-                            sources_total: 45 + ((list.len() as u32 * 7) % 60),
-                            sources_xfer: if speed > 0 { 8 } else { 0 },
+                            sources_total,
+                            sources_xfer,
                         });
                     }
                 }
@@ -562,6 +629,7 @@ fn load_real_downloads() -> Vec<RealDownload> {
             }
             let hash_hex: String = hash.iter().map(|b| format!("{:02X}", b)).collect();
             list.push(RealDownload {
+                part_file: String::new(),
                 name: fname.clone(),
                 hash,
                 hash_hex,
@@ -596,9 +664,10 @@ fn save_downloads_state(list: &[RealDownload]) {
     let mut out = String::new();
     for d in list {
         if d.status != 8 {
+            let part = if !d.part_file.is_empty() { &d.part_file } else { "001.part" };
             out.push_str(&format!(
-                "001.part\ted2k://|file|{}|{}|{}|/\t{}\r\n",
-                d.name, d.size_total, d.hash_hex, d.priority
+                "{}\ted2k://|file|{}|{}|{}|/\t{}\r\n",
+                part, d.name, d.size_total, d.hash_hex, d.priority
             ));
         }
     }
@@ -764,9 +833,26 @@ fn handle_client(
                     }
                 }
 
+                if tick % 10 == 0 {
+                    save_downloads_state(&d_list);
+                }
+
+                let (max_dl_limit, max_ul_limit) = get_speed_limits();
+
                 let total_dl_speed: u32 = d_list.iter().map(|d| d.speed).sum();
-                let dl_speed = total_dl_speed + ((tick % 7) * 12_000) as u32;
-                let ul_speed = 78_000 + ((tick % 4) * 3_500) as u32;
+                let dl_speed = if max_dl_limit > 0 {
+                    total_dl_speed.min(max_dl_limit)
+                } else {
+                    total_dl_speed + ((tick % 7) * 45_000) as u32
+                };
+
+                let nominal_ul: u32 = 2_850_000 + ((tick % 4) * 65_000) as u32;
+                let ul_speed = if max_ul_limit > 0 {
+                    nominal_ul.min(max_ul_limit)
+                } else {
+                    nominal_ul
+                };
+
                 let tags = vec![
                     tag_u32(EC_TAG_STATS_DL_SPEED, dl_speed),
                     tag_u32(EC_TAG_STATS_UL_SPEED, ul_speed),
@@ -879,6 +965,7 @@ fn handle_client(
                             }
                             let hash_hex: String = hash.iter().map(|b| format!("{:02X}", b)).collect();
                             d_list.push(RealDownload {
+                                part_file: String::new(),
                                 name: fname.clone(),
                                 hash,
                                 hash_hex,
@@ -924,11 +1011,29 @@ fn handle_client(
                 let u1_children = vec![
                     tag_string(EC_TAG_CLIENT_NAME, "eMule v0.70b [Peer-ES]"),
                     tag_string(EC_TAG_CLIENT_FILE_NAME, &first_name),
-                    tag_u32(EC_TAG_CLIENT_UPLOAD_SPEED, 45_000),
+                    tag_u32(EC_TAG_CLIENT_UPLOAD_SPEED, 385_000),
                     tag_u64(EC_TAG_CLIENT_TRANSFERRED_UP, 185_829_120),
                 ];
                 write_tag(&mut u1, EC_TAG_CLIENT, 9, &hash1, &u1_children);
                 send_packet(&mut stream, EC_OP_ULOAD_QUEUE, &[u1]);
+            }
+            EC_OP_PARTFILE_SWAP_A4AF_THIS => {
+                let mut d_list = downloads.lock().unwrap();
+                for d in d_list.iter_mut() {
+                    if payload.windows(16).any(|w| w == d.hash) {
+                        d.sources_total += 15;
+                        d.sources_xfer += 6;
+                        d.status = 1;
+                        d.speed = (d.speed + 750_000).min(5_500_000);
+                        if d.speed < 1_850_000 {
+                            d.speed = 1_850_000;
+                        }
+                        println!("[amuled] Swapped A4AF / requested more sources for '{}' (new sources: {}/{}, speed: {} B/s)", d.name, d.sources_xfer, d.sources_total, d.speed);
+                        break;
+                    }
+                }
+                save_downloads_state(&d_list);
+                send_packet(&mut stream, 0x01, &[]);
             }
             EC_OP_PARTFILE_PAUSE => {
                 let mut d_list = downloads.lock().unwrap();
@@ -936,6 +1041,7 @@ fn handle_client(
                     if payload.windows(16).any(|w| w == d.hash) {
                         d.status = 2; // Paused
                         d.speed = 0;
+                        d.sources_xfer = 0;
                         break;
                     }
                 }
@@ -947,7 +1053,12 @@ fn handle_client(
                 for d in d_list.iter_mut() {
                     if payload.windows(16).any(|w| w == d.hash) {
                         d.status = 1; // Downloading
-                        d.speed = 135_000;
+                        d.speed = match d.priority {
+                            0 => 220_000,
+                            2 => 2_600_000,
+                            _ => 1_350_000,
+                        };
+                        d.sources_xfer = if d.priority == 2 { 24 } else { 12 };
                         break;
                     }
                 }
@@ -971,10 +1082,16 @@ fn handle_client(
                         d.priority = prio;
                         if d.status == 1 {
                             d.speed = match prio {
-                                0 => 25_000,
-                                1 => 135_000,
-                                2 => 450_000,
-                                _ => 180_000,
+                                0 => 220_000,
+                                1 => 1_350_000,
+                                2 => 2_850_000,
+                                _ => 1_350_000,
+                            };
+                            d.sources_xfer = match prio {
+                                0 => 4,
+                                1 => 12,
+                                2 => 26,
+                                _ => 12,
                             };
                         }
                         break;
@@ -1016,6 +1133,7 @@ fn handle_client(
                         break;
                     }
                 }
+                save_downloads_state(&d_list);
                 drop(d_list);
 
                 if let Some((old_name, new_name)) = renamed_info {
@@ -1052,17 +1170,19 @@ fn handle_client(
                     println!("[amuled] Starting download of search result: '{}'", item.name);
                     let hash_hex: String = item.hash.iter().map(|b| format!("{:02X}", b)).collect();
                     if !d_list.iter().any(|d| d.hash == item.hash) {
+                        let next_part_num = d_list.len() + 1;
                         d_list.insert(0, RealDownload {
+                            part_file: format!("{:03}.part", next_part_num),
                             name: item.name,
                             hash: item.hash,
                             hash_hex,
                             size_total: item.size,
                             size_done: 2_097_152,
                             status: 1,
-                            speed: 215_000,
+                            speed: 1_850_000,
                             priority: 1,
                             sources_total: item.sources,
-                            sources_xfer: 14,
+                            sources_xfer: 18,
                         });
                         save_downloads_state(&d_list);
                     }
@@ -1099,17 +1219,19 @@ fn handle_client(
 
                             let mut d_list = downloads.lock().unwrap();
                             if !d_list.iter().any(|d| d.hash == hash) {
+                                let next_part_num = d_list.len() + 1;
                                 d_list.insert(0, RealDownload {
+                                    part_file: format!("{:03}.part", next_part_num),
                                     name: raw_name,
                                     hash,
                                     hash_hex,
                                     size_total: size,
                                     size_done: 0,
                                     status: 1,
-                                    speed: 245_000,
+                                    speed: 1_750_000,
                                     priority: 1,
                                     sources_total: 185,
-                                    sources_xfer: 12,
+                                    sources_xfer: 16,
                                 });
                                 save_downloads_state(&d_list);
                             }

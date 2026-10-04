@@ -47,6 +47,7 @@ pub const EC_OP_STATS: u8 = 0x0C;
 // --- Downloads ---
 pub const EC_OP_GET_DLOAD_QUEUE: u8 = 0x0D;
 pub const EC_OP_DLOAD_QUEUE: u8 = 0x1F;
+pub const EC_OP_PARTFILE_SWAP_A4AF_THIS: u8 = 0x16;
 pub const EC_OP_PARTFILE_PAUSE: u8 = 0x19;
 pub const EC_OP_PARTFILE_RESUME: u8 = 0x1A;
 pub const EC_OP_PARTFILE_STOP: u8 = 0x1B;

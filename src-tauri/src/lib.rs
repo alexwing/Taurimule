@@ -207,6 +207,7 @@ pub fn run() {
             commands::downloads::resume_download,
             commands::downloads::delete_download,
             commands::downloads::set_download_priority,
+            commands::downloads::request_more_sources,
             commands::downloads::launch_file,
             commands::downloads::show_in_folder,
             commands::downloads::rename_file,

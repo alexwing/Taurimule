@@ -39,7 +39,7 @@ const es: Dict = {
     settings: "Configuración",
     preferences: "Ajustes",
     minimizeToTray: "Minimizar a bandeja",
-    version: "v0.1.3",
+    version: "v0.1.4",
   },
   downloads: {
     title: "Cola de Descargas",
@@ -96,6 +96,10 @@ const es: Dict = {
     openFolderTitle: "Abrir carpeta de descargas en el Explorador de archivos",
     connectingDaemonTitle: "Conectando al motor aMule...",
     connectingDaemonSub: "Esperando comunicación con amuled para sincronizar la cola de transferencias...",
+    pendingLabel: "pendientes",
+    totalBadge: "total",
+    completedCountLabel: "completados",
+    totalCountLabel: "en total",
   },
   servers: {
     title: "Servidores eD2K",
@@ -287,6 +291,8 @@ const es: Dict = {
     prioritySet: "Prioridad establecida a {{prio}}",
     pause: "Pausar",
     resume: "Reanudar",
+    requestMoreSources: "Buscar más fuentes",
+    requestMoreSourcesSuccess: "Solicitando más fuentes y semillas a la red...",
     delete: "Eliminar descarga",
   },
   cleaner: {

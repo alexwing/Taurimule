@@ -118,6 +118,7 @@ export const api = {
   resumeDownload: (hash: string) => invoke<void>('resume_download', { hash }),
   deleteDownload: (hash: string) => invoke<void>('delete_download', { hash }),
   setDownloadPriority: (hash: string, priority: number) => invoke<void>('set_download_priority', { hash, priority }),
+  requestMoreSources: (hash: string) => invoke<void>('request_more_sources', { hash }),
 
   // File Operations (Windows Explorer & Default Player)
   launchFile: (name: string, hash?: string, path?: string) => invoke<void>('launch_file', { name, hash, path }),

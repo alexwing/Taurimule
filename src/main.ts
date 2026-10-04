@@ -1181,6 +1181,11 @@ async function renderView() {
   const content = document.getElementById("content");
   if (!content) return;
 
+  const activeEl = document.activeElement as HTMLInputElement | null;
+  const isFilterFocused = activeEl?.id === "input-filter-downloads";
+  const filterSelStart = isFilterFocused ? activeEl?.selectionStart : null;
+  const filterSelEnd = isFilterFocused ? activeEl?.selectionEnd : null;
+
   // Refresh daemon status
   try {
     currentDaemonStatus = await api.getDaemonStatus();
@@ -1207,6 +1212,16 @@ async function renderView() {
   }
 
   attachEventListeners();
+
+  if (isFilterFocused) {
+    const newFilter = document.getElementById("input-filter-downloads") as HTMLInputElement | null;
+    if (newFilter) {
+      newFilter.focus();
+      if (filterSelStart !== null && filterSelEnd !== null) {
+        newFilter.setSelectionRange(filterSelStart, filterSelEnd);
+      }
+    }
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1242,9 +1257,495 @@ function renderHeader(title: string, subtitle: string, breadcrumb: string): stri
     </div>`;
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// 1. DOWNLOADS VIEW (Cola de Descargas)
-// ═══════════════════════════════════════════════════════════════════
+async function handleActionClick(e: Event) {
+  e.stopPropagation();
+  const target = e.currentTarget as HTMLElement;
+  const action = target.dataset.action;
+  const hash = target.dataset.hash;
+  try {
+    switch (action) {
+      case "download":
+        await api.downloadFile(hash!);
+        navigate("downloads");
+        break;
+      case "clean-download": {
+        const rawName = safeDecode(target.dataset.name);
+        if (rawName && hash) {
+          showFilenameCleanModal(rawName, "download", async (cleanName) => {
+            try {
+              await api.downloadFile(hash);
+              if (cleanName && cleanName !== rawName) {
+                setTimeout(async () => {
+                  try {
+                    await api.renameFile(hash, cleanName, rawName);
+                  } catch (e) {
+                    console.warn("Could not auto-rename download:", e);
+                  }
+                }, 350);
+              }
+              showToast(`⬇ ${t("downloads.title")}: ${cleanName || rawName}`);
+              navigate("downloads");
+            } catch (err) {
+              showToast(`⚠️ ${err}`);
+            }
+          });
+        }
+        break;
+      }
+      case "launch": {
+        const rawName = safeDecode(target.dataset.name);
+        const fileHash = target.dataset.hash || hash || "";
+        if (rawName || fileHash) {
+          try {
+            await api.launchFile(rawName, fileHash);
+            showToast(`🚀 ${t("cleaner.launchSuccess")}`);
+          } catch (err) {
+            showToast(`⚠️ ${err}`);
+          }
+        }
+        break;
+      }
+      case "show-in-folder": {
+        const rawName = safeDecode(target.dataset.name);
+        const fileHash = target.dataset.hash || hash || "";
+        await api.showInFolder(rawName, fileHash);
+        break;
+      }
+      case "clean-rename": {
+        const rawName = safeDecode(target.dataset.name);
+        const fileHash = target.dataset.hash || hash || "";
+        if (fileHash && rawName) {
+          showFilenameCleanModal(rawName, "rename", async (cleanName) => {
+            try {
+              await api.renameFile(fileHash, cleanName, rawName);
+              showToast(`✏️ Renombrado en eMule: ${cleanName}`);
+              await renderView();
+            } catch (err) {
+              showToast(`⚠️ ${err}`);
+            }
+          });
+        }
+        break;
+      }
+      case "request-more-sources":
+        if (hash) {
+          try {
+            await api.requestMoreSources(hash);
+            showToast(`🔍 ${t("contextMenu.requestMoreSourcesSuccess")}`);
+          } catch (err) {
+            showToast(`⚠️ ${err}`);
+          }
+        }
+        break;
+      case "pause":
+        await api.pauseDownload(hash!);
+        renderView();
+        break;
+      case "resume":
+        await api.resumeDownload(hash!);
+        renderView();
+        break;
+      case "delete":
+        if (await confirmDialog(t("downloads.confirmDelete"), { confirmLabel: t("common.delete"), danger: true, icon: "🗑️" })) {
+          await api.deleteDownload(hash!);
+          renderView();
+        }
+        break;
+      case "connect-server":
+        await api.connectServer(target.dataset.ip!, parseInt(target.dataset.port!));
+        renderView();
+        break;
+      case "disconnect-server":
+        await api.disconnectServer();
+        renderView();
+        break;
+      case "remove-server": {
+        const ip = target.dataset.ip;
+        const port = parseInt(target.dataset.port || "0", 10);
+        if (ip && port) {
+          if (await confirmDialog(t("servers.confirmRemoveServer"), { title: t("servers.removeServer"), confirmLabel: t("common.delete"), danger: true, icon: "🗑️" })) {
+            try {
+              await api.removeServer(ip, port);
+              showToast(`🗑️ ${t("servers.serverRemovedSuccess")}`);
+              renderView();
+            } catch (err) {
+              showToast(`⚠️ Error: ${err}`);
+            }
+          }
+        }
+        break;
+      }
+    }
+  } catch (err) {
+    console.error("Action error:", action, err);
+  }
+}
+
+function attachDownloadRowInteractions(el: HTMLElement) {
+  const name = safeDecode(el.dataset.name);
+  const hash = el.dataset.hash || "";
+  const status = el.dataset.status || "";
+  const size = parseInt(el.dataset.size || "0");
+  const priority = el.dataset.priority || "Normal";
+
+  // Double-click: only launch completed files (never open folder on incomplete)
+  el.addEventListener("dblclick", async (e) => {
+    e.preventDefault();
+    if (status === "Complete") {
+      try {
+        await api.launchFile(name, hash);
+        showToast(`🚀 ${t("cleaner.launchSuccess")}`);
+      } catch (err) {
+        showToast(`⚠️ ${err}`);
+      }
+    }
+  });
+
+  // Right-click Context Menu
+  el.addEventListener("contextmenu", (e: MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const items: ContextMenuItem[] = status === "Complete"
+      ? [
+          {
+            label: t("contextMenu.launch"),
+            icon: "🚀",
+            onClick: async () => {
+              try {
+                await api.launchFile(name, hash);
+                showToast(`🚀 ${t("cleaner.launchSuccess")}`);
+              } catch (err) {
+                showToast(`⚠️ ${err}`);
+              }
+            },
+          },
+          {
+            label: t("contextMenu.showInFolder"),
+            icon: "📂",
+            onClick: async () => {
+              await api.showInFolder(name, hash);
+            },
+          },
+          {
+            label: t("contextMenu.cleanName"),
+            icon: "🧹",
+            onClick: () => {
+              showFilenameCleanModal(name, "rename", async (cleanName) => {
+                try {
+                  await api.renameFile(hash, cleanName, name);
+                  showToast(`✏️ Renombrado en eMule: ${cleanName}`);
+                  await renderView();
+                } catch (err) {
+                  showToast(`⚠️ ${err}`);
+                }
+              });
+            },
+          },
+          "divider",
+          {
+            label: t("contextMenu.copyEd2k"),
+            icon: "📋",
+            onClick: async () => {
+              const ed2kLink = `ed2k://|file|${name}|${size}|${hash}|/`;
+              try {
+                await navigator.clipboard.writeText(ed2kLink);
+                showToast(`📋 ${t("cleaner.copied")}`);
+              } catch {
+                showToast(ed2kLink);
+              }
+            },
+          },
+          {
+            label: t("contextMenu.copyHash"),
+            icon: "🔑",
+            onClick: async () => {
+              try {
+                await navigator.clipboard.writeText(hash);
+                showToast(`🔑 Hash copiado`);
+              } catch {
+                showToast(hash);
+              }
+            },
+          },
+          "divider",
+          {
+            label: t("contextMenu.delete"),
+            icon: "🗑️",
+            danger: true,
+            onClick: async () => {
+              if (await confirmDialog(t("downloads.confirmDelete"), { confirmLabel: t("common.delete"), danger: true, icon: "🗑️" })) {
+                await api.deleteDownload(hash);
+                renderView();
+              }
+            },
+          },
+        ]
+      : [
+          status === "Paused"
+            ? {
+                label: t("contextMenu.resume"),
+                icon: "▶️",
+                onClick: async () => {
+                  await api.resumeDownload(hash);
+                  renderView();
+                },
+              }
+            : {
+                label: t("contextMenu.pause"),
+                icon: "⏸️",
+                onClick: async () => {
+                  await api.pauseDownload(hash);
+                  renderView();
+                },
+              },
+          {
+            label: t("contextMenu.requestMoreSources"),
+            icon: "🔍",
+            onClick: async () => {
+              try {
+                await api.requestMoreSources(hash);
+                showToast(`🔍 ${t("contextMenu.requestMoreSourcesSuccess")}`);
+              } catch (err) {
+                showToast(`⚠️ ${err}`);
+              }
+            },
+          },
+          {
+            label: t("contextMenu.cleanName"),
+            icon: "🧹",
+            onClick: () => {
+              showFilenameCleanModal(name, "rename", async (cleanName) => {
+                try {
+                  await api.renameFile(hash, cleanName, name);
+                  showToast(`✏️ Renombrado en eMule: ${cleanName}`);
+                  await renderView();
+                } catch (err) {
+                  showToast(`⚠️ ${err}`);
+                }
+              });
+            },
+          },
+          {
+            label: t("contextMenu.priority"),
+            icon: "⚡",
+            children: [
+              {
+                label: `${t("contextMenu.priorityAuto")} ${priority.toLowerCase() === "auto" ? "✓" : ""}`,
+                icon: "🔄",
+                onClick: async () => {
+                  await api.setDownloadPriority(hash, 3);
+                  showToast(t("contextMenu.prioritySet", { prio: t("contextMenu.priorityAuto") }));
+                  await renderView();
+                },
+              },
+              {
+                label: `${t("contextMenu.priorityHigh")} ${priority.toLowerCase() === "high" ? "✓" : ""}`,
+                icon: "🔺",
+                onClick: async () => {
+                  await api.setDownloadPriority(hash, 2);
+                  showToast(t("contextMenu.prioritySet", { prio: t("contextMenu.priorityHigh") }));
+                  await renderView();
+                },
+              },
+              {
+                label: `${t("contextMenu.priorityNormal")} ${priority.toLowerCase() === "normal" ? "✓" : ""}`,
+                icon: "➖",
+                onClick: async () => {
+                  await api.setDownloadPriority(hash, 1);
+                  showToast(t("contextMenu.prioritySet", { prio: t("contextMenu.priorityNormal") }));
+                  await renderView();
+                },
+              },
+              {
+                label: `${t("contextMenu.priorityLow")} ${priority.toLowerCase() === "low" ? "✓" : ""}`,
+                icon: "🔻",
+                onClick: async () => {
+                  await api.setDownloadPriority(hash, 0);
+                  showToast(t("contextMenu.prioritySet", { prio: t("contextMenu.priorityLow") }));
+                  await renderView();
+                },
+              },
+            ],
+          },
+          "divider",
+          {
+            label: t("contextMenu.copyEd2k"),
+            icon: "📋",
+            onClick: async () => {
+              const ed2kLink = `ed2k://|file|${name}|${size}|${hash}|/`;
+              try {
+                await navigator.clipboard.writeText(ed2kLink);
+                showToast(`📋 ${t("cleaner.copied")}`);
+              } catch {
+                showToast(ed2kLink);
+              }
+            },
+          },
+          {
+            label: t("contextMenu.copyHash"),
+            icon: "🔑",
+            onClick: async () => {
+              try {
+                await navigator.clipboard.writeText(hash);
+                showToast(`🔑 Hash copiado`);
+              } catch {
+                showToast(hash);
+              }
+            },
+          },
+          "divider",
+          {
+            label: t("contextMenu.delete"),
+            icon: "🗑️",
+            danger: true,
+            onClick: async () => {
+              if (await confirmDialog(t("downloads.confirmDelete"), { confirmLabel: t("common.delete"), danger: true, icon: "🗑️" })) {
+                await api.deleteDownload(hash);
+                renderView();
+              }
+            },
+          },
+        ];
+
+    showContextMenu(e.clientX, e.clientY, items);
+  });
+}
+
+function renderDownloadsTableRows(items: DownloadInfo[]): string {
+  if (items.length === 0) {
+    return `<tr><td colspan="6" style="text-align: center; padding: 36px 20px;">
+      <div class="empty-state-logo-card">
+        <div style="width: 56px; height: 56px; display: flex; align-items: center; justify-content: center;">
+          ${getLogoSvg(currentLogoState, 56, "dl-empty")}
+        </div>
+        ${
+          !currentDaemonStatus?.ec_connected
+            ? `
+            <h3>⏳ ${t("downloads.connectingDaemonTitle")}</h3>
+            <p style="margin-bottom: 12px;">${t("downloads.connectingDaemonSub")}</p>
+            <button class="btn btn-primary" id="btn-toggle-daemon">▶ ${t("settings.startDaemon")}</button>
+            `
+            : `
+            <h3>${(downloadFilterQuery || hideCompletedDownloads) && cachedDownloads.length > 0 ? t("downloads.emptyFilterTitle") : t("downloads.emptyQueueTitle")}</h3>
+            <p style="margin-bottom: 8px;">${(downloadFilterQuery || hideCompletedDownloads) && cachedDownloads.length > 0 ? t("downloads.emptyFilterHelp") : t("downloads.emptyQueueHelp")}</p>
+            ${cachedDownloads.length === 0 ? `
+              <div style="display: flex; gap: 10px; margin-top: 10px; justify-content: center;">
+                <button class="btn btn-primary" id="btn-empty-add-ed2k">➕ ${t("downloads.addEd2kLink")}</button>
+                <button class="btn btn-secondary" onclick="window.navigateToView('search')">🔍 ${t("downloads.goToSearch")}</button>
+              </div>
+            ` : ""}
+            `
+        }
+      </div>
+     </td></tr>`;
+  }
+
+  return items
+    .map(
+      (d) => `
+    <tr 
+      class="download-row ${d.status === "Complete" ? "completed-row" : ""}" 
+      data-hash="${d.hash}" 
+      data-name="${encodeURIComponent(d.name)}" 
+      data-status="${d.status}" 
+      data-size="${d.size_total}"
+      data-priority="${d.priority}"
+      title="${d.status === "Complete" ? "Doble clic para lanzar | Clic derecho para opciones" : "Clic derecho para opciones"}"
+    >
+      <td>
+        <div class="file-title-cell">
+          <span class="file-icon">${getFileIcon(d.name)}</span>
+          <div class="file-info-stack">
+            <div class="file-name-text" title="${d.name}">${d.name}</div>
+            <div class="file-sub-meta">${t("downloads.hash")}: ${d.hash.substring(0, 12)}... | ${t("downloads.fileStatus")}: ${d.status} | ${t("contextMenu.priority")}: <strong>${d.priority}</strong></div>
+          </div>
+        </div>
+      </td>
+      <td>
+        <div style="font-weight: 500;">${formatSize(d.size_total)}</div>
+        <div style="font-size: 11px; color: var(--text-tertiary);">${formatSize(d.size_done)}</div>
+      </td>
+      <td>
+        <div class="fluent-progress-track">
+          <div class="fluent-progress-fill ${d.status === "Complete" ? "completed" : ""}" style="width: ${(d.progress * 100).toFixed(1)}%;"></div>
+        </div>
+        <div class="fluent-progress-text">${(d.progress * 100).toFixed(1)}%</div>
+      </td>
+      <td>
+        <span style="font-family: var(--font-mono); color: ${d.speed > 0 ? "var(--primary)" : (d.status === "Complete" ? "var(--success)" : "var(--text-tertiary)")}">
+          ${d.status === "Downloading" ? formatSpeed(d.speed) : (d.status === "Complete" ? `✓ ${d.status}` : d.status)}
+        </span>
+      </td>
+      <td>
+        ${d.status === "Complete" ? "100%" : `${d.sources_transferring}/${d.sources_total}`}
+      </td>
+      <td style="text-align: right; white-space: nowrap;">
+        ${
+          d.status === "Complete"
+            ? `
+              <button class="btn btn-primary btn-icon" data-action="launch" data-name="${encodeURIComponent(d.name)}" data-hash="${d.hash}" title="${t("contextMenu.launch")}">🚀 ${t("cleaner.launchBtn")}</button>
+              <button class="btn btn-secondary btn-icon" data-action="show-in-folder" data-name="${encodeURIComponent(d.name)}" data-hash="${d.hash}" title="${t("contextMenu.showInFolder")}">📂</button>
+              <button class="btn btn-secondary btn-icon" data-action="clean-rename" data-name="${encodeURIComponent(d.name)}" data-hash="${d.hash}" title="${t("contextMenu.cleanName")}">🧹</button>
+              <button class="btn btn-danger btn-icon" data-action="delete" data-hash="${d.hash}" title="${t("common.delete")}">🗑</button>
+            `
+            : `
+              ${
+                d.status === "Paused"
+                  ? `<button class="btn btn-secondary btn-icon" data-action="resume" data-hash="${d.hash}" title="${t("common.resume")}">▶</button>`
+                  : `<button class="btn btn-secondary btn-icon" data-action="pause" data-hash="${d.hash}" title="${t("common.pause")}">⏸</button>`
+              }
+              <button class="btn btn-secondary btn-icon" data-action="request-more-sources" data-hash="${d.hash}" title="${t("contextMenu.requestMoreSources")}">🔍</button>
+              <button class="btn btn-secondary btn-icon" data-action="clean-rename" data-name="${encodeURIComponent(d.name)}" data-hash="${d.hash}" title="${t("contextMenu.cleanName")}">🧹</button>
+              <button class="btn btn-danger btn-icon" data-action="delete" data-hash="${d.hash}" title="${t("common.delete")}">🗑</button>
+            `
+        }
+      </td>
+    </tr>`
+    )
+    .join("");
+}
+
+function applyDownloadsFilter() {
+  const tbody = document.getElementById("downloads-table-body");
+  const countLabel = document.getElementById("downloads-count-label");
+  if (!tbody) return;
+
+  const filtered = cachedDownloads.filter((d) => {
+    const matchesFilter = downloadFilterQuery
+      ? d.name.toLowerCase().includes(downloadFilterQuery.toLowerCase())
+      : true;
+    const matchesCompleted = hideCompletedDownloads ? d.status !== "Complete" : true;
+    return matchesFilter && matchesCompleted;
+  });
+  const sorted = sortDownloads(filtered, downloadSortColumn, downloadSortDirection);
+
+  if (countLabel) {
+    countLabel.textContent = t("downloads.transferringFiles", { count: sorted.length });
+  }
+
+  tbody.innerHTML = renderDownloadsTableRows(sorted);
+
+  tbody.querySelectorAll("[data-action]").forEach((btn) => {
+    btn.addEventListener("click", handleActionClick);
+  });
+  tbody.querySelectorAll(".download-row").forEach((row) => {
+    attachDownloadRowInteractions(row as HTMLElement);
+  });
+  tbody.querySelector("#btn-empty-add-ed2k")?.addEventListener("click", () => openAddEd2kModalWithClipboardCheck());
+  tbody.querySelector("#btn-toggle-daemon")?.addEventListener("click", async () => {
+    try {
+      if (currentDaemonStatus?.running) {
+        await api.stopDaemon();
+      } else {
+        await api.startDaemon();
+      }
+      setTimeout(() => renderView(), 800);
+    } catch (e) {
+      console.error("Failed to toggle daemon:", e);
+    }
+  });
+}
 
 async function renderDownloadsView(): Promise<string> {
   let stats: GlobalStats = {
@@ -1274,6 +1775,9 @@ async function renderDownloadsView(): Promise<string> {
   const badgeEl = document.getElementById("badge-dl-count");
   if (badgeEl) badgeEl.textContent = cachedDownloads.length.toString();
 
+  const completedCount = cachedDownloads.filter((d) => d.status === "Complete").length;
+  const pendingCount = cachedDownloads.length - completedCount;
+
   // Metrics Bar (Syncdrome style)
   const metricsHtml = `
     <div class="metrics-grid">
@@ -1296,10 +1800,15 @@ async function renderDownloadsView(): Promise<string> {
       <div class="metric-card">
         <div class="metric-header">
           <span class="metric-label">${t("downloads.queueFiles")}</span>
-          <span class="metric-badge badge-success">${cachedDownloads.length}</span>
+          <span class="metric-badge badge-primary">${cachedDownloads.length} ${t("downloads.totalBadge")}</span>
         </div>
-        <div class="metric-value">${cachedDownloads.length}</div>
-        <div class="metric-subtext">${t("downloads.importedFromEmule")}</div>
+        <div class="metric-value" style="display: flex; align-items: baseline; gap: 6px;">
+          <span>${pendingCount}</span>
+          <span style="font-size: 13px; font-weight: 500; color: var(--text-secondary); text-transform: lowercase;">${t("downloads.pendingLabel")}</span>
+        </div>
+        <div class="metric-subtext">
+          ${completedCount > 0 ? `✓ ${completedCount} ${t("downloads.completedCountLabel")} • ` : ""}${cachedDownloads.length} ${t("downloads.totalCountLabel")}
+        </div>
       </div>
       <div class="metric-card">
         <div class="metric-header">
@@ -1313,7 +1822,6 @@ async function renderDownloadsView(): Promise<string> {
       </div>
     </div>`;
 
-  const completedCount = cachedDownloads.filter((d) => d.status === "Complete").length;
   const filtered = cachedDownloads.filter((d) => {
     const matchesFilter = downloadFilterQuery
       ? d.name.toLowerCase().includes(downloadFilterQuery.toLowerCase())
@@ -1326,7 +1834,7 @@ async function renderDownloadsView(): Promise<string> {
   const tableHtml = `
     <div class="table-container">
       <div class="table-toolbar">
-        <div style="font-weight: 600; font-size: 13px;">${t("downloads.transferringFiles", { count: sorted.length })}</div>
+        <div id="downloads-count-label" style="font-weight: 600; font-size: 13px;">${t("downloads.transferringFiles", { count: sorted.length })}</div>
         <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
           <label class="fluent-switch-container" title="${t("downloads.hideCompletedDesc")}">
             <span class="fluent-switch-label">${t("downloads.hideCompleted")}${completedCount > 0 ? ` (${completedCount})` : ""}</span>
@@ -1396,98 +1904,8 @@ async function renderDownloadsView(): Promise<string> {
             <th style="width: 12%; text-align: right;">${t("downloads.actions")}</th>
           </tr>
         </thead>
-        <tbody>
-          ${
-            sorted.length === 0
-              ? `<tr><td colspan="6" style="text-align: center; padding: 36px 20px;">
-                  <div class="empty-state-logo-card">
-                    <div style="width: 56px; height: 56px; display: flex; align-items: center; justify-content: center;">
-                      ${getLogoSvg(currentLogoState, 56, "dl-empty")}
-                    </div>
-                    ${
-                      !currentDaemonStatus?.ec_connected
-                        ? `
-                        <h3>⏳ ${t("downloads.connectingDaemonTitle")}</h3>
-                        <p style="margin-bottom: 12px;">${t("downloads.connectingDaemonSub")}</p>
-                        <button class="btn btn-primary" id="btn-toggle-daemon">▶ ${t("settings.startDaemon")}</button>
-                        `
-                        : `
-                        <h3>${(downloadFilterQuery || hideCompletedDownloads) && cachedDownloads.length > 0 ? t("downloads.emptyFilterTitle") : t("downloads.emptyQueueTitle")}</h3>
-                        <p style="margin-bottom: 8px;">${(downloadFilterQuery || hideCompletedDownloads) && cachedDownloads.length > 0 ? t("downloads.emptyFilterHelp") : t("downloads.emptyQueueHelp")}</p>
-                        ${cachedDownloads.length === 0 ? `
-                          <div style="display: flex; gap: 10px; margin-top: 10px; justify-content: center;">
-                            <button class="btn btn-primary" id="btn-empty-add-ed2k">➕ ${t("downloads.addEd2kLink")}</button>
-                            <button class="btn btn-secondary" onclick="window.navigateToView('search')">🔍 ${t("downloads.goToSearch")}</button>
-                          </div>
-                        ` : ""}
-                        `
-                    }
-                  </div>
-                 </td></tr>`
-              : sorted
-                  .map(
-                    (d) => `
-                <tr 
-                  class="download-row ${d.status === "Complete" ? "completed-row" : ""}" 
-                  data-hash="${d.hash}" 
-                  data-name="${encodeURIComponent(d.name)}" 
-                  data-status="${d.status}" 
-                  data-size="${d.size_total}"
-                  data-priority="${d.priority}"
-                  title="${d.status === "Complete" ? "Doble clic para lanzar | Clic derecho para opciones" : "Clic derecho para opciones"}"
-                >
-                  <td>
-                    <div class="file-title-cell">
-                      <span class="file-icon">${getFileIcon(d.name)}</span>
-                      <div class="file-info-stack">
-                        <div class="file-name-text" title="${d.name}">${d.name}</div>
-                        <div class="file-sub-meta">${t("downloads.hash")}: ${d.hash.substring(0, 12)}... | ${t("downloads.fileStatus")}: ${d.status} | ${t("contextMenu.priority")}: <strong>${d.priority}</strong></div>
-                      </div>
-                    </div>
-                  </td>
-                  <td>
-                    <div style="font-weight: 500;">${formatSize(d.size_total)}</div>
-                    <div style="font-size: 11px; color: var(--text-tertiary);">${formatSize(d.size_done)}</div>
-                  </td>
-                  <td>
-                    <div class="fluent-progress-track">
-                      <div class="fluent-progress-fill ${d.status === "Complete" ? "completed" : ""}" style="width: ${(d.progress * 100).toFixed(1)}%;"></div>
-                    </div>
-                    <div class="fluent-progress-text">${(d.progress * 100).toFixed(1)}%</div>
-                  </td>
-                  <td>
-                    <span style="font-family: var(--font-mono); color: ${d.speed > 0 ? "var(--primary)" : (d.status === "Complete" ? "var(--success)" : "var(--text-tertiary)")}">
-                      ${d.status === "Downloading" ? formatSpeed(d.speed) : (d.status === "Complete" ? `✓ ${d.status}` : d.status)}
-                    </span>
-                  </td>
-                  <td>
-                    ${d.status === "Complete" ? "100%" : `${d.sources_transferring}/${d.sources_total}`}
-                  </td>
-                  <td style="text-align: right; white-space: nowrap;">
-                    ${
-                      d.status === "Complete"
-                        ? `
-                          <button class="btn btn-primary btn-icon" data-action="launch" data-name="${encodeURIComponent(d.name)}" data-hash="${d.hash}" title="${t("contextMenu.launch")}">🚀 ${t("cleaner.launchBtn")}</button>
-                          <button class="btn btn-secondary btn-icon" data-action="show-in-folder" data-name="${encodeURIComponent(d.name)}" data-hash="${d.hash}" title="${t("contextMenu.showInFolder")}">📂</button>
-                          <button class="btn btn-secondary btn-icon" data-action="clean-rename" data-name="${encodeURIComponent(d.name)}" data-hash="${d.hash}" title="${t("contextMenu.cleanName")}">🧹</button>
-                          <button class="btn btn-danger btn-icon" data-action="delete" data-hash="${d.hash}" title="${t("common.delete")}">🗑</button>
-                        `
-                        : `
-                          ${
-                            d.status === "Paused"
-                              ? `<button class="btn btn-secondary btn-icon" data-action="resume" data-hash="${d.hash}" title="${t("common.resume")}">▶</button>`
-                              : `<button class="btn btn-secondary btn-icon" data-action="pause" data-hash="${d.hash}" title="${t("common.pause")}">⏸</button>`
-                          }
-                          <button class="btn btn-secondary btn-icon" data-action="show-in-folder" data-name="${encodeURIComponent(d.name)}" data-hash="${d.hash}" title="${t("contextMenu.showInFolder")}">📂</button>
-                          <button class="btn btn-secondary btn-icon" data-action="clean-rename" data-name="${encodeURIComponent(d.name)}" data-hash="${d.hash}" title="${t("contextMenu.cleanName")}">🧹</button>
-                          <button class="btn btn-danger btn-icon" data-action="delete" data-hash="${d.hash}" title="${t("common.delete")}">🗑</button>
-                        `
-                    }
-                  </td>
-                </tr>`
-                  )
-                  .join("")
-          }
+        <tbody id="downloads-table-body">
+          ${renderDownloadsTableRows(sorted)}
         </tbody>
       </table>
     </div>`;
@@ -2337,7 +2755,7 @@ function attachEventListeners() {
   checkHideCompleted?.addEventListener("change", (e) => {
     hideCompletedDownloads = (e.target as HTMLInputElement).checked;
     localStorage.setItem("taurimule_hide_completed", hideCompletedDownloads ? "true" : "false");
-    renderView();
+    applyDownloadsFilter();
   });
 
   // Filter downloads input
@@ -2345,12 +2763,7 @@ function attachEventListeners() {
   if (filterInput) {
     filterInput.addEventListener("input", (e) => {
       downloadFilterQuery = (e.target as HTMLInputElement).value;
-      renderView();
-      const updatedInput = document.getElementById("input-filter-downloads") as HTMLInputElement | null;
-      if (updatedInput) {
-        updatedInput.focus();
-        updatedInput.setSelectionRange(updatedInput.value.length, updatedInput.value.length);
-      }
+      applyDownloadsFilter();
     });
   }
 
@@ -2935,287 +3348,12 @@ function attachEventListeners() {
 
   // Action Delegation
   document.querySelectorAll("[data-action]").forEach((btn) => {
-    btn.addEventListener("click", async (e) => {
-      e.stopPropagation();
-      const target = e.currentTarget as HTMLElement;
-      const action = target.dataset.action;
-      const hash = target.dataset.hash;
-      try {
-        switch (action) {
-          case "download":
-            await api.downloadFile(hash!);
-            navigate("downloads");
-            break;
-          case "clean-download": {
-            const rawName = safeDecode(target.dataset.name);
-            if (rawName && hash) {
-              showFilenameCleanModal(rawName, "download", async (cleanName) => {
-                try {
-                  await api.downloadFile(hash);
-                  if (cleanName && cleanName !== rawName) {
-                    setTimeout(async () => {
-                      try {
-                        await api.renameFile(hash, cleanName, rawName);
-                      } catch (e) {
-                        console.warn("Could not auto-rename download:", e);
-                      }
-                    }, 350);
-                  }
-                  showToast(`⬇ ${t("downloads.title")}: ${cleanName || rawName}`);
-                  navigate("downloads");
-                } catch (err) {
-                  showToast(`⚠️ ${err}`);
-                }
-              });
-            }
-            break;
-          }
-          case "launch": {
-            const rawName = safeDecode(target.dataset.name);
-            const fileHash = target.dataset.hash || hash || "";
-            if (rawName || fileHash) {
-              try {
-                await api.launchFile(rawName, fileHash);
-                showToast(`🚀 ${t("cleaner.launchSuccess")}`);
-              } catch (err) {
-                showToast(`⚠️ ${err}`);
-              }
-            }
-            break;
-          }
-          case "show-in-folder": {
-            const rawName = safeDecode(target.dataset.name);
-            const fileHash = target.dataset.hash || hash || "";
-            await api.showInFolder(rawName, fileHash);
-            break;
-          }
-          case "clean-rename": {
-            const rawName = safeDecode(target.dataset.name);
-            const fileHash = target.dataset.hash || hash || "";
-            if (fileHash && rawName) {
-              showFilenameCleanModal(rawName, "rename", async (cleanName) => {
-                try {
-                  await api.renameFile(fileHash, cleanName, rawName);
-                  showToast(`✏️ Renombrado en eMule: ${cleanName}`);
-                  await renderView();
-                } catch (err) {
-                  showToast(`⚠️ ${err}`);
-                }
-              });
-            }
-            break;
-          }
-          case "pause":
-            await api.pauseDownload(hash!);
-            renderView();
-            break;
-          case "resume":
-            await api.resumeDownload(hash!);
-            renderView();
-            break;
-          case "delete":
-            if (await confirmDialog(t("downloads.confirmDelete"), { confirmLabel: t("common.delete"), danger: true, icon: "🗑️" })) {
-              await api.deleteDownload(hash!);
-              renderView();
-            }
-            break;
-          case "connect-server":
-            await api.connectServer(target.dataset.ip!, parseInt(target.dataset.port!));
-            renderView();
-            break;
-          case "disconnect-server":
-            await api.disconnectServer();
-            renderView();
-            break;
-          case "remove-server": {
-            const ip = target.dataset.ip;
-            const port = parseInt(target.dataset.port || "0", 10);
-            if (ip && port) {
-              if (await confirmDialog(t("servers.confirmRemoveServer"), { confirmLabel: t("common.delete"), danger: true, icon: "🗑️" })) {
-                try {
-                  await api.removeServer(ip, port);
-                  showToast(`🗑️ ${t("servers.serverRemovedSuccess")}`);
-                  renderView();
-                } catch (err) {
-                  showToast(`⚠️ Error: ${err}`);
-                }
-              }
-            }
-            break;
-          }
-        }
-      } catch (err) {
-        console.error("Action error:", action, err);
-      }
-    });
+    btn.addEventListener("click", handleActionClick);
   });
 
   // Right-click & Double-click on Download Rows (Syncdrome Context Menu)
   document.querySelectorAll(".download-row").forEach((row) => {
-    const el = row as HTMLElement;
-    const name = safeDecode(el.dataset.name);
-    const hash = el.dataset.hash || "";
-    const status = el.dataset.status || "";
-    const size = parseInt(el.dataset.size || "0");
-    const priority = el.dataset.priority || "Normal";
-
-    // Double-click to launch if Complete, or show in folder
-    el.addEventListener("dblclick", async (e) => {
-      e.preventDefault();
-      if (status === "Complete") {
-        try {
-          await api.launchFile(name, hash);
-          showToast(`🚀 ${t("cleaner.launchSuccess")}`);
-        } catch (err) {
-          showToast(`⚠️ ${err}`);
-        }
-      } else {
-        await api.showInFolder(name, hash);
-      }
-    });
-
-    // Right-click Context Menu
-    el.addEventListener("contextmenu", (e: MouseEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-
-      const items: ContextMenuItem[] = [
-        {
-          label: t("contextMenu.launch"),
-          icon: "🚀",
-          onClick: async () => {
-            try {
-              await api.launchFile(name, hash);
-              showToast(`🚀 ${t("cleaner.launchSuccess")}`);
-            } catch (err) {
-              showToast(`⚠️ ${err}`);
-            }
-          },
-        },
-        {
-          label: t("contextMenu.showInFolder"),
-          icon: "📂",
-          onClick: async () => {
-            await api.showInFolder(name, hash);
-          },
-        },
-        status === "Paused"
-          ? {
-              label: t("contextMenu.resume"),
-              icon: "▶️",
-              onClick: async () => {
-                await api.resumeDownload(hash);
-                renderView();
-              },
-            }
-          : {
-              label: t("contextMenu.pause"),
-              icon: "⏸️",
-              onClick: async () => {
-                await api.pauseDownload(hash);
-                renderView();
-              },
-            },
-        {
-          label: t("contextMenu.cleanName"),
-          icon: "🧹",
-          onClick: () => {
-            showFilenameCleanModal(name, "rename", async (cleanName) => {
-              try {
-                await api.renameFile(hash, cleanName, name);
-                showToast(`✏️ Renombrado en eMule: ${cleanName}`);
-                await renderView();
-              } catch (err) {
-                showToast(`⚠️ ${err}`);
-              }
-            });
-          },
-        },
-        {
-          label: t("contextMenu.priority"),
-          icon: "⚡",
-          disabled: status === "Complete",
-          children: [
-            {
-              label: `${t("contextMenu.priorityAuto")} ${priority.toLowerCase() === "auto" ? "✓" : ""}`,
-              icon: "🔄",
-              onClick: async () => {
-                await api.setDownloadPriority(hash, 3);
-                showToast(t("contextMenu.prioritySet", { prio: t("contextMenu.priorityAuto") }));
-                await renderView();
-              },
-            },
-            {
-              label: `${t("contextMenu.priorityHigh")} ${priority.toLowerCase() === "high" ? "✓" : ""}`,
-              icon: "🔺",
-              onClick: async () => {
-                await api.setDownloadPriority(hash, 2);
-                showToast(t("contextMenu.prioritySet", { prio: t("contextMenu.priorityHigh") }));
-                await renderView();
-              },
-            },
-            {
-              label: `${t("contextMenu.priorityNormal")} ${priority.toLowerCase() === "normal" ? "✓" : ""}`,
-              icon: "➖",
-              onClick: async () => {
-                await api.setDownloadPriority(hash, 1);
-                showToast(t("contextMenu.prioritySet", { prio: t("contextMenu.priorityNormal") }));
-                await renderView();
-              },
-            },
-            {
-              label: `${t("contextMenu.priorityLow")} ${priority.toLowerCase() === "low" ? "✓" : ""}`,
-              icon: "🔻",
-              onClick: async () => {
-                await api.setDownloadPriority(hash, 0);
-                showToast(t("contextMenu.prioritySet", { prio: t("contextMenu.priorityLow") }));
-                await renderView();
-              },
-            },
-          ],
-        },
-        "divider",
-        {
-          label: t("contextMenu.copyEd2k"),
-          icon: "📋",
-          onClick: async () => {
-            const ed2kLink = `ed2k://|file|${name}|${size}|${hash}|/`;
-            try {
-              await navigator.clipboard.writeText(ed2kLink);
-              showToast(`📋 ${t("cleaner.copied")}`);
-            } catch {
-              showToast(ed2kLink);
-            }
-          },
-        },
-        {
-          label: t("contextMenu.copyHash"),
-          icon: "🔑",
-          onClick: async () => {
-            try {
-              await navigator.clipboard.writeText(hash);
-              showToast(`🔑 Hash copiado`);
-            } catch {
-              showToast(hash);
-            }
-          },
-        },
-        "divider",
-        {
-          label: t("contextMenu.delete"),
-          icon: "🗑️",
-          danger: true,
-          onClick: async () => {
-            if (await confirmDialog(t("downloads.confirmDelete"), { confirmLabel: t("common.delete"), danger: true, icon: "🗑️" })) {
-              await api.deleteDownload(hash);
-              renderView();
-            }
-          },
-        },
-      ];
-
-      showContextMenu(e.clientX, e.clientY, items);
-    });
+    attachDownloadRowInteractions(row as HTMLElement);
   });
 
   // Right-click on Search Results rows
