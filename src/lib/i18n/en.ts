@@ -37,7 +37,7 @@ const en = {
     settings: "Settings",
     preferences: "Preferences",
     minimizeToTray: "Minimize to tray",
-    version: "v0.1.6",
+    version: "v0.1.7",
   },
   downloads: {
     title: "Download Queue",
@@ -98,6 +98,9 @@ const en = {
     totalBadge: "total",
     completedCountLabel: "completed",
     totalCountLabel: "in total",
+    refresh: "Refresh",
+    refreshTitle: "Manually refresh download queue and stats",
+    refreshed: "Download queue refreshed",
   },
   servers: {
     title: "eD2K Servers",

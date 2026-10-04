@@ -39,7 +39,7 @@ const de: Dict = {
     settings: "Einstellungen",
     preferences: "Einstellungen",
     minimizeToTray: "In den Infobereich minimieren",
-    version: "v0.1.6",
+    version: "v0.1.7",
   },
   downloads: {
     title: "Download-Warteschlange",
@@ -100,6 +100,9 @@ const de: Dict = {
     totalBadge: "gesamt",
     completedCountLabel: "abgeschlossen",
     totalCountLabel: "insgesamt",
+    refresh: "Aktualisieren",
+    refreshTitle: "Download-Warteschlange manuell aktualisieren",
+    refreshed: "Download-Warteschlange aktualisiert",
   },
   servers: {
     title: "eD2K-Server",

@@ -1411,8 +1411,10 @@ body {
   display: inline-block;
 }
 
-.search-tab-icon.spinning {
-  animation: spinTab 1s linear infinite;
+.search-tab-icon.spinning,
+.refresh-icon.spin {
+  animation: spinTab 0.7s linear infinite;
+  display: inline-block;
 }
 
 @keyframes spinTab {

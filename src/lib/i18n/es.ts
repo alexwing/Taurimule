@@ -39,7 +39,7 @@ const es: Dict = {
     settings: "Configuración",
     preferences: "Ajustes",
     minimizeToTray: "Minimizar a bandeja",
-    version: "v0.1.6",
+    version: "v0.1.7",
   },
   downloads: {
     title: "Cola de Descargas",
@@ -100,6 +100,9 @@ const es: Dict = {
     totalBadge: "total",
     completedCountLabel: "completados",
     totalCountLabel: "en total",
+    refresh: "Refrescar",
+    refreshTitle: "Refrescar manualmente la cola de descargas",
+    refreshed: "Lista de descargas actualizada",
   },
   servers: {
     title: "Servidores eD2K",

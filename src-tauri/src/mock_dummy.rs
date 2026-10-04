@@ -917,23 +917,63 @@ fn handle_client(
                 tick += 1;
                 let mut d_list = downloads.lock().unwrap();
 
-                let (incoming_dir, _) = get_configured_dirs();
+                let (incoming_dir, temp_dir) = get_configured_dirs();
 
-                // Increment simulated download progress realistically without falsely completing
+                // Increment download progress and complete to incoming_dir when reaching 100%
                 for d in d_list.iter_mut() {
                     if d.status == 1 && d.size_total > 0 {
                         let is_in_incoming = file_exists_in_incoming(&d.name, &incoming_dir);
                         if is_in_incoming {
-                            d.status = 8; // Physical file in IncomingDir!
+                            d.status = 8;
                             d.size_done = d.size_total;
                             d.speed = 0;
                             d.sources_xfer = 0;
-                        } else {
-                            // Progress download up to at most 98%, never mark completed unless in IncomingDir
-                            let max_bytes = (d.size_total as f64 * 0.98) as u64;
-                            if d.size_done < max_bytes {
-                                d.size_done = (d.size_done + (d.speed as u64) * 2).min(max_bytes);
+                            continue;
+                        }
+
+                        // Progress download by speed * 2 (each tick represents ~2s)
+                        d.size_done = (d.size_done + (d.speed as u64) * 2).min(d.size_total);
+
+                        // If download reaches 100%, complete it!
+                        if d.size_done >= d.size_total {
+                            d.size_done = d.size_total;
+                            d.status = 8;
+                            d.speed = 0;
+                            d.sources_xfer = 0;
+
+                            let clean_name = sanitize_filename(&url_decode(&d.name));
+                            let incoming_path = incoming_dir.join(&clean_name);
+
+                            if !incoming_path.exists() {
+                                let part_path = if !d.part_file.is_empty() {
+                                    temp_dir.join(&d.part_file)
+                                } else {
+                                    PathBuf::new()
+                                };
+
+                                if !d.part_file.is_empty() && part_path.exists() {
+                                    // Move part file from Temp to Incoming (handles cross-volume move C: -> D:)
+                                    if fs::rename(&part_path, &incoming_path).is_err() {
+                                        if fs::copy(&part_path, &incoming_path).is_ok() {
+                                            let _ = fs::remove_file(&part_path);
+                                        }
+                                    }
+                                    // Ensure full target file length
+                                    if let Ok(file) = fs::OpenOptions::new().write(true).open(&incoming_path) {
+                                        let _ = file.set_len(d.size_total);
+                                    }
+                                    // Clean up associated .met files in Temp
+                                    let _ = fs::remove_file(temp_dir.join(format!("{}.met", d.part_file)));
+                                    let _ = fs::remove_file(temp_dir.join(format!("{}.met.bak", d.part_file)));
+                                } else {
+                                    // Allocate target file in incoming directory
+                                    if let Ok(file) = fs::File::create(&incoming_path) {
+                                        let _ = file.set_len(d.size_total);
+                                    }
+                                }
                             }
+                            d.name = clean_name;
+                            println!("[amuled] Completed download: '{}' ({} bytes) -> moved to Incoming", d.name, d.size_total);
                         }
                     }
                 }

@@ -1856,6 +1856,9 @@ async function renderDownloadsView(): Promise<string> {
           <button id="btn-clean-all-downloads" class="btn btn-secondary" style="display: flex; align-items: center; gap: 6px; font-weight: 500; padding: 6px 12px; white-space: nowrap;" title="${t("downloads.cleanAllTitle")}">
             <span>🧹</span> <span>${t("downloads.cleanAll")}</span>
           </button>
+          <button id="btn-refresh-downloads" class="btn btn-secondary" style="display: flex; align-items: center; gap: 6px; font-weight: 500; padding: 6px 12px; white-space: nowrap;" title="${t("downloads.refreshTitle")}">
+            <span class="refresh-icon">🔄</span> <span>${t("downloads.refresh")}</span>
+          </button>
           <button id="btn-add-ed2k" class="btn btn-primary" style="display: flex; align-items: center; gap: 6px; font-weight: 600; padding: 6px 14px; white-space: nowrap;">
             <span>➕</span> <span>${t("downloads.addEd2kLink")}</span>
           </button>
@@ -3143,6 +3146,23 @@ function attachEventListeners() {
     }
     showToast(`✏️ ${t("downloads.cleanAllDone", { count: ok })}`);
     await renderView();
+  });
+
+  // Manual Refresh in Downloads
+  document.getElementById("btn-refresh-downloads")?.addEventListener("click", async () => {
+    const btn = document.getElementById("btn-refresh-downloads");
+    const icon = btn?.querySelector(".refresh-icon");
+    if (icon) icon.classList.add("spin");
+    try {
+      await renderView();
+      showToast(`🔄 ${t("downloads.refreshed")}`);
+    } catch (err) {
+      console.error("Refresh error:", err);
+    } finally {
+      if (icon) {
+        setTimeout(() => icon.classList.remove("spin"), 500);
+      }
+    }
   });
 
   // Sortable column headers in Downloads
