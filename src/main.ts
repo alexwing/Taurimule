@@ -22,8 +22,8 @@ let currentView: ViewName = "downloads";
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 let currentDaemonStatus: DaemonStatus | null = null;
 let downloadFilterQuery = "";
-const savedHideCompleted = localStorage.getItem("taurimule_hide_completed");
-let hideCompletedDownloads = savedHideCompleted !== null ? savedHideCompleted === "true" : true;
+const savedShowCompleted = localStorage.getItem("taurimule_show_completed");
+let showCompletedDownloads = savedShowCompleted !== null ? savedShowCompleted === "true" : false;
 let cachedDownloads: DownloadInfo[] = [];
 let isAppStartingUp = true;
 
@@ -1354,8 +1354,8 @@ function renderDownloadsTableRows(items: DownloadInfo[]): string {
             <button class="btn btn-primary" id="btn-toggle-daemon">▶ ${t("settings.startDaemon")}</button>
             `
             : `
-            <h3>${(downloadFilterQuery || hideCompletedDownloads) && cachedDownloads.length > 0 ? t("downloads.emptyFilterTitle") : t("downloads.emptyQueueTitle")}</h3>
-            <p style="margin-bottom: 8px;">${(downloadFilterQuery || hideCompletedDownloads) && cachedDownloads.length > 0 ? t("downloads.emptyFilterHelp") : t("downloads.emptyQueueHelp")}</p>
+            <h3>${(downloadFilterQuery || !showCompletedDownloads) && cachedDownloads.length > 0 ? t("downloads.emptyFilterTitle") : t("downloads.emptyQueueTitle")}</h3>
+            <p style="margin-bottom: 8px;">${(downloadFilterQuery || !showCompletedDownloads) && cachedDownloads.length > 0 ? t("downloads.emptyFilterHelp") : t("downloads.emptyQueueHelp")}</p>
             ${cachedDownloads.length === 0 ? `
               <div style="display: flex; gap: 10px; margin-top: 10px; justify-content: center;">
                 <button class="btn btn-primary" id="btn-empty-add-ed2k">➕ ${t("downloads.addEd2kLink")}</button>
@@ -1391,7 +1391,7 @@ function updateDownloadsTableIncremental() {
     const matchesFilter = downloadFilterQuery
       ? d.name.toLowerCase().includes(downloadFilterQuery.toLowerCase())
       : true;
-    const matchesCompleted = hideCompletedDownloads ? d.status !== "Complete" : true;
+    const matchesCompleted = showCompletedDownloads ? true : d.status !== "Complete";
     return matchesFilter && matchesCompleted;
   });
   const sorted = sortDownloads(filtered, downloadSortColumn, downloadSortDirection);
@@ -1542,9 +1542,9 @@ function applySnapshotToDownloadsView(snap?: Snapshot) {
     countsSub.textContent = `${completedCount > 0 ? `✓ ${completedCount} ${t("downloads.completedCountLabel")} • ` : ""}${cachedDownloads.length} ${t("downloads.totalCountLabel")}`;
   }
 
-  const hideCompletedLabel = document.querySelector(".compact-switch .fluent-switch-label");
-  if (hideCompletedLabel) {
-    hideCompletedLabel.textContent = `${t("downloads.hideCompleted")}${completedCount > 0 ? ` (${completedCount})` : ""}`;
+  const showCompletedLabel = document.querySelector(".compact-switch .fluent-switch-label");
+  if (showCompletedLabel) {
+    showCompletedLabel.textContent = `${t("downloads.showCompleted")}${completedCount > 0 ? ` (${completedCount})` : ""}`;
   }
 
   updateDownloadsTableIncremental();
@@ -1613,28 +1613,28 @@ function renderDownloadsViewShell(): string {
       <div class="table-toolbar downloads-toolbar">
         <div id="downloads-count-label" class="downloads-toolbar-count">${t("downloads.transferringFiles", { count: cachedDownloads.length })}</div>
         <div class="downloads-toolbar-actions">
-          <label class="fluent-switch-container compact-switch" title="${t("downloads.hideCompletedDesc")}">
-            <span class="fluent-switch-label">${t("downloads.hideCompleted")}${completedCount > 0 ? ` (${completedCount})` : ""}</span>
+          <label class="fluent-switch-container compact-switch" title="${t("downloads.showCompletedDesc")}">
+            <span class="fluent-switch-label">${t("downloads.showCompleted")}${completedCount > 0 ? ` (${completedCount})` : ""}</span>
             <div class="fluent-switch">
               <input 
                 type="checkbox" 
-                id="check-hide-completed" 
+                id="check-show-completed" 
                 class="fluent-switch-input" 
-                ${hideCompletedDownloads ? "checked" : ""} 
+                ${showCompletedDownloads ? "checked" : ""} 
               />
               <span class="fluent-switch-track">
                 <span class="fluent-switch-thumb"></span>
               </span>
             </div>
           </label>
-          <button id="btn-open-downloads-folder" class="btn btn-secondary btn-compact" title="${t("downloads.openFolderTitle")}">
-            <span>📁</span> <span>${t("downloads.openFolder")}</span>
+          <button id="btn-open-downloads-folder" class="btn btn-secondary btn-compact btn-compact-icon" title="${t("downloads.openFolderTitle")}">
+            <span style="font-size: 14px;">📁</span>
           </button>
           <button id="btn-refresh-downloads" class="btn btn-secondary btn-compact" title="${t("downloads.refreshTitle")}">
             <span class="refresh-icon">🔄</span> <span>${t("downloads.refresh")}</span>
           </button>
-          <button id="btn-add-ed2k" class="btn btn-primary btn-compact" title="${t("downloads.addEd2kLinkTitle")}">
-            <span>➕</span> <span>${t("downloads.addEd2kCompact")}</span>
+          <button id="btn-add-ed2k" class="btn btn-secondary btn-compact btn-compact-icon" title="${t("downloads.addEd2kLinkTitle")}">
+            <span style="font-size: 14px;">🔗</span>
           </button>
           <input 
             type="text" 
@@ -1696,9 +1696,9 @@ function renderDownloadsViewShell(): string {
 }
 
 function attachDownloadsToolbarListeners() {
-  document.getElementById("check-hide-completed")?.addEventListener("change", (e) => {
-    hideCompletedDownloads = (e.target as HTMLInputElement).checked;
-    localStorage.setItem("taurimule_hide_completed", hideCompletedDownloads ? "true" : "false");
+  document.getElementById("check-show-completed")?.addEventListener("change", (e) => {
+    showCompletedDownloads = (e.target as HTMLInputElement).checked;
+    localStorage.setItem("taurimule_show_completed", showCompletedDownloads ? "true" : "false");
     updateDownloadsTableIncremental();
   });
 

@@ -446,6 +446,12 @@ body {
   border-radius: var(--radius-sm) !important;
 }
 
+.btn-compact-icon {
+  padding: 4px 7px !important;
+  min-width: 28px !important;
+  justify-content: center !important;
+}
+
 .table-search-input-compact {
   height: 28px !important;
   padding: 4px 8px !important;
