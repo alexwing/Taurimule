@@ -669,6 +669,9 @@ function showAddEd2kModal(initialText = "") {
           await api.addEd2kLinks(batchItems);
           showToast(`✅ ${t("downloads.batchAddedSuccess", { count: batchItems.length })}`);
         }
+        downloadFilterQuery = "";
+        const filterInput = document.getElementById("input-filter-downloads") as HTMLInputElement | null;
+        if (filterInput) filterInput.value = "";
         navigate("downloads");
       } catch (err) {
         showToast(`⚠️ Error al añadir enlaces: ${err}`);
@@ -1356,12 +1359,20 @@ function renderDownloadsTableRows(items: DownloadInfo[]): string {
             : `
             <h3>${(downloadFilterQuery || !showCompletedDownloads) && cachedDownloads.length > 0 ? t("downloads.emptyFilterTitle") : t("downloads.emptyQueueTitle")}</h3>
             <p style="margin-bottom: 8px;">${(downloadFilterQuery || !showCompletedDownloads) && cachedDownloads.length > 0 ? t("downloads.emptyFilterHelp") : t("downloads.emptyQueueHelp")}</p>
-            ${cachedDownloads.length === 0 ? `
-              <div style="display: flex; gap: 10px; margin-top: 10px; justify-content: center;">
+            <div style="display: flex; gap: 10px; margin-top: 10px; justify-content: center; flex-wrap: wrap;">
+              ${cachedDownloads.length === 0 ? `
                 <button class="btn btn-primary" id="btn-empty-add-ed2k">➕ ${t("downloads.addEd2kLink")}</button>
                 <button class="btn btn-secondary" onclick="window.navigateToView('search')">🔍 ${t("downloads.goToSearch")}</button>
-              </div>
-            ` : ""}
+              ` : `
+                ${!showCompletedDownloads && cachedDownloads.some(d => d.status === "Complete") ? `
+                  <button class="btn btn-secondary" id="btn-empty-show-completed">👁️ ${t("downloads.showCompleted")} (${cachedDownloads.filter(d => d.status === "Complete").length})</button>
+                ` : ""}
+                ${downloadFilterQuery ? `
+                  <button class="btn btn-secondary" id="btn-empty-clear-filter">❌ ${t("downloads.clearFilter")}</button>
+                ` : ""}
+                <button class="btn btn-primary" id="btn-empty-add-ed2k">➕ ${t("downloads.addEd2kLink")}</button>
+              `}
+            </div>
             `
         }
       </div>
@@ -1403,6 +1414,19 @@ function updateDownloadsTableIncremental() {
   if (sorted.length === 0) {
     tbody.innerHTML = renderDownloadsTableRows([]);
     tbody.querySelector("#btn-empty-add-ed2k")?.addEventListener("click", () => openAddEd2kModalWithClipboardCheck());
+    tbody.querySelector("#btn-empty-show-completed")?.addEventListener("click", () => {
+      showCompletedDownloads = true;
+      localStorage.setItem("taurimule_show_completed", "true");
+      const chk = document.getElementById("check-show-completed") as HTMLInputElement | null;
+      if (chk) chk.checked = true;
+      updateDownloadsTableIncremental();
+    });
+    tbody.querySelector("#btn-empty-clear-filter")?.addEventListener("click", () => {
+      downloadFilterQuery = "";
+      const filterInput = document.getElementById("input-filter-downloads") as HTMLInputElement | null;
+      if (filterInput) filterInput.value = "";
+      updateDownloadsTableIncremental();
+    });
     tbody.querySelector("#btn-toggle-daemon")?.addEventListener("click", async () => {
       try {
         if (currentDaemonStatus?.running) await api.stopDaemon();
@@ -3534,6 +3558,10 @@ function enqueueAddEd2kLink(rawLink: string) {
       try {
         const res = await api.addEd2kLink(link);
         showToast(`✅ ${t("downloads.linkAddedSuccess")}: ${res.name}`);
+        downloadFilterQuery = "";
+        const filterInput = document.getElementById("input-filter-downloads") as HTMLInputElement | null;
+        if (filterInput) filterInput.value = "";
+        navigate("downloads");
         return;
       } catch (err: any) {
         const errStr = err ? err.toString() : "";

@@ -106,6 +106,7 @@ const de: Dict = {
     addEd2kCompact: "Link",
     addEd2kLinkTitle: "eD2k-Link zum Herunterladen einfügen",
     filterPlaceholderShort: "Filtern...",
+    clearFilter: "Filter zurücksetzen",
   },
   servers: {
     title: "eD2K-Server",

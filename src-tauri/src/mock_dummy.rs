@@ -648,14 +648,15 @@ fn handle_client(
                 tick += 1;
                 let mut d_list = downloads.lock().unwrap();
 
-                // Increment download progress in-memory; complete when reaching 100%
+                // Increment download progress in-memory; advance gradually so active downloads remain active
                 for d in d_list.iter_mut() {
                     if d.size_total == 0 {
                         d.size_total = 2_150_000_000;
                     }
                     if d.status == 1 && d.size_total > 0 {
-                        // Progress download by speed * 2 (each tick represents ~2s)
-                        d.size_done = (d.size_done + (d.speed as u64) * 2).min(d.size_total);
+                        // Advance download by realistic step (~1/4 of speed per second)
+                        let delta = ((d.speed as u64) / 4).max(65_536);
+                        d.size_done = (d.size_done + delta).min(d.size_total);
 
                         // If download reaches 100%, complete it purely in memory!
                         if d.size_done >= d.size_total {
@@ -668,10 +669,10 @@ fn handle_client(
                     }
                 }
 
-                // Active Queue Manager: keep 14 to 18 downloads actively downloading at all times!
+                // Active Queue Manager: keep ~8 downloads actively downloading
                 let active_count = d_list.iter().filter(|d| d.status == 1).count();
-                if active_count < 15 {
-                    let needed = 15 - active_count;
+                if active_count < 8 {
+                    let needed = 8 - active_count;
                     let mut promoted = 0;
                     for d in d_list.iter_mut() {
                         if d.status == 0 { // Waiting
@@ -925,7 +926,20 @@ fn handle_client(
                 if let Some(item) = found_item {
                     println!("[amuled] Starting download of search result: '{}'", item.name);
                     let hash_hex: String = item.hash.iter().map(|b| format!("{:02X}", b)).collect();
-                    if !d_list.iter().any(|d| d.hash == item.hash) {
+                    if let Some(pos) = d_list.iter().position(|d| d.hash == item.hash) {
+                        let mut existing = d_list.remove(pos);
+                        existing.name = item.name;
+                        existing.size_total = item.size;
+                        existing.size_done = 0;
+                        existing.status = 1;
+                        existing.speed = 1_850_000;
+                        existing.priority = 1;
+                        existing.sources_total = item.sources;
+                        existing.sources_xfer = 18;
+                        d_list.insert(0, existing);
+                        save_downloads_state(&d_list);
+                        println!("[amuled] Re-added search result download (reset to downloading at top): '{}'", d_list[0].name);
+                    } else {
                         let next_part_num = d_list.len() + 1;
                         d_list.insert(0, RealDownload {
                             part_file: format!("{:03}.part", next_part_num),
@@ -941,6 +955,7 @@ fn handle_client(
                             sources_xfer: 18,
                         });
                         save_downloads_state(&d_list);
+                        println!("[amuled] Added new search result download at top: '{}'", d_list[0].name);
                     }
                 }
                 send_packet(&mut stream, 0x01, &[]);
@@ -977,7 +992,20 @@ fn handle_client(
                             let hash = hex_to_16_bytes(&hash_hex);
 
                             let mut d_list = downloads.lock().unwrap();
-                            if !d_list.iter().any(|d| d.hash == hash) {
+                            if let Some(pos) = d_list.iter().position(|d| d.hash == hash) {
+                                let mut existing = d_list.remove(pos);
+                                existing.name = raw_name;
+                                existing.size_total = size;
+                                existing.size_done = 0;
+                                existing.status = 1;
+                                existing.speed = 1_750_000;
+                                existing.priority = 1;
+                                existing.sources_total = 185;
+                                existing.sources_xfer = 16;
+                                d_list.insert(0, existing);
+                                save_downloads_state(&d_list);
+                                println!("[amuled] Re-added existing download (reset to downloading at top): '{}'", d_list[0].name);
+                            } else {
                                 let next_part_num = d_list.len() + 1;
                                 d_list.insert(0, RealDownload {
                                     part_file: format!("{:03}.part", next_part_num),
@@ -993,6 +1021,7 @@ fn handle_client(
                                     sources_xfer: 16,
                                 });
                                 save_downloads_state(&d_list);
+                                println!("[amuled] Added new download at top of queue: '{}'", d_list[0].name);
                             }
                         }
                     }

@@ -104,6 +104,7 @@ const en = {
     addEd2kCompact: "Link",
     addEd2kLinkTitle: "Paste eD2k link to download",
     filterPlaceholderShort: "Filter...",
+    clearFilter: "Clear filter",
   },
   servers: {
     title: "eD2K Servers",
