@@ -18,13 +18,22 @@ const EC_PASSWORD: &str = "taurimule";
 pub async fn start_amuled(handle: &AppHandle) -> Result<(), String> {
     let state = handle.state::<AppState>();
 
-    // Check if already running
+    // Check if already running in current session
     {
         let pid = state.sidecar_pid.lock().await;
         if pid.is_some() {
             log::info!("amuled already running");
             return Ok(());
         }
+    }
+
+    // Clean up any stale or orphaned amuled instances from previous crashes / unclosed sessions
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/IM", "amuled.exe"])
+            .output();
+        tokio::time::sleep(Duration::from_millis(300)).await;
     }
 
     log::info!("Starting amuled sidecar on EC port {}...", EC_PORT);
@@ -161,6 +170,13 @@ pub async fn stop_amuled(handle: &AppHandle) {
             }
         }
         *pid = None;
+
+        #[cfg(target_os = "windows")]
+        {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/F", "/IM", "amuled.exe"])
+                .output();
+        }
     }
 
     log::info!("amuled stopped");

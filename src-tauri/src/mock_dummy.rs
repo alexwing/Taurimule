@@ -15,7 +15,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+
 
 // ═══════════════════════════════════════════════════════════════════
 // EC Protocol Constants
@@ -1211,9 +1211,7 @@ fn main() {
         }
         Err(e) => {
             eprintln!("[amuled] Failed to bind to {}: {}", bind_addr, e);
-            loop {
-                thread::sleep(Duration::from_secs(1));
-            }
+            std::process::exit(1);
         }
     };
 

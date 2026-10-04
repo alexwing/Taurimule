@@ -351,6 +351,14 @@ pub fn run() {
             commands::config::register_ed2k_association,
             commands::config::unregister_ed2k_association,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running TauriMule");
+        .build(tauri::generate_context!())
+        .expect("error while building TauriMule")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                let handle = app_handle.clone();
+                tauri::async_runtime::block_on(async {
+                    sidecar_manager::stop_amuled(&handle).await;
+                });
+            }
+        });
 }
