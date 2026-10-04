@@ -76,7 +76,7 @@ export const t = (key: string, vars?: Record<string, string | number>): string =
     key;
 
   if (!vars) return raw;
-  return raw.replace(/\{\{(\w+)\}\}/g, (_, name) =>
+  return raw.replace(/\{{2,3}(\w+)\}{2,3}/g, (_, name) =>
     name in vars ? String(vars[name]) : `{{${name}}}`
   );
 };

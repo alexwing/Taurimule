@@ -1,4 +1,4 @@
-// TauriMule Filename Cleaning Engine — Inspired by Syncdrome's renameEngine.ts
+﻿// TauriMule Filename Cleaning Engine â€” Inspired by Syncdrome's renameEngine.ts
 // Cleans release junk, scene tags, dots, underscores, brackets, and URLs
 // while preserving file extension and calculating a detailed diff.
 
@@ -36,7 +36,7 @@ const COMMON_PATTERNS = [
   // Quality & Edition Tags
   /\b(proper|repack|extended|unrated|directors\.?cut|remastered)\b/gi,
   // Languages & Subs
-  /\b(spanish|castellano|español|english|french|german|sub(s|bed)?|vose|dual|multi|spa-eng-sub)\b/gi,
+  /\b(spanish|castellano|espaÃ±ol|english|french|german|sub(s|bed)?|vose|dual|multi|spa-eng-sub)\b/gi,
   // Non-year bracketed / parenthesized tags e.g. [grupots], (Spanish.English.Subs)
   // (Negative lookahead ensures 4-digit years like (2002) are NOT matched)
   /\[(?!\d{4}\])[^\]]{2,30}\]/gi,
@@ -48,12 +48,65 @@ const COMMON_PATTERNS = [
 ];
 
 /**
+ * Repairs broken charsets in filenames:
+ *  - percent-encoded UTF-8 (e.g. "Cig%C3%BCe%C3%B1a" -> "CigÃ¼eÃ±a")
+ *  - UTF-8 bytes misread as Latin-1 / mojibake (e.g. "CigÃƒÂ¼eÃƒÂ±a" -> "CigÃ¼eÃ±a")
+ */
+export function fixFilenameCharset(name: string): string {
+  let out = name;
+
+  // 1. Percent-decoding (only when valid escapes are present)
+  if (/%[0-9A-Fa-f]{2}/.test(out)) {
+    try {
+      out = decodeURIComponent(out);
+    } catch {
+      // Malformed UTF-8 sequence: decode what we can, byte by byte as Latin-1/UTF-8 mix
+      out = out.replace(/(?:%[0-9A-Fa-f]{2})+/g, (m) => {
+        try {
+          return decodeURIComponent(m);
+        } catch {
+          return m.replace(/%([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+        }
+      });
+    }
+  }
+
+  // 2. Mojibake: UTF-8 interpreted as Latin-1 (ÃƒÂ¼, ÃƒÂ±, ÃƒÂ©, Ã¢â‚¬â„¢ ...)
+  if (/[\u00C2\u00C3\u00E2][\u0080-\u00BF\u20AC\u201A-\u203A\u0152\u0153\u0160\u0161\u0178\u017D\u017E\u0192\u02C6\u02DC]/.test(out)) {
+    try {
+      const cp1252: Record<number, number> = {
+        0x20ac: 0x80, 0x201a: 0x82, 0x0192: 0x83, 0x201e: 0x84, 0x2026: 0x85, 0x2020: 0x86,
+        0x2021: 0x87, 0x02c6: 0x88, 0x2030: 0x89, 0x0160: 0x8a, 0x2039: 0x8b, 0x0152: 0x8c,
+        0x017d: 0x8e, 0x2018: 0x91, 0x2019: 0x92, 0x201c: 0x93, 0x201d: 0x94, 0x2022: 0x95,
+        0x2013: 0x96, 0x2014: 0x97, 0x02dc: 0x98, 0x2122: 0x99, 0x0161: 0x9a, 0x203a: 0x9b,
+        0x0153: 0x9c, 0x017e: 0x9e, 0x0178: 0x9f,
+      };
+      const bytes = new Uint8Array(out.length);
+      for (let i = 0; i < out.length; i++) {
+        const c = out.charCodeAt(i);
+        const b = c <= 0xff ? c : cp1252[c];
+        if (b === undefined) throw new Error("not latin1");
+        bytes[i] = b;
+      }
+      const fixed = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      out = fixed;
+    } catch {
+      // not mojibake, keep as is
+    }
+  }
+
+  return out.normalize("NFC");
+}
+
+/**
  * Strips release tags, scene junk, dots, and underscores from a filename.
  */
-export function cleanFilename(filename: string, customCutPattern?: string): CleanResult {
-  const dotIndex = filename.lastIndexOf(".");
-  const extension = dotIndex > 0 ? filename.slice(dotIndex) : "";
-  const baseOriginal = dotIndex > 0 ? filename.slice(0, dotIndex) : filename;
+export function cleanFilename(rawFilename: string, customCutPattern?: string): CleanResult {
+  const filename = rawFilename;
+  const decoded = fixFilenameCharset(rawFilename);
+  const dotIndex = decoded.lastIndexOf(".");
+  const extension = dotIndex > 0 ? decoded.slice(dotIndex) : "";
+  const baseOriginal = dotIndex > 0 ? decoded.slice(0, dotIndex) : decoded;
 
   let working = baseOriginal;
 
@@ -108,7 +161,7 @@ export function cleanFilename(filename: string, customCutPattern?: string): Clea
     })
     .join(" ");
 
-  const cleaned = baseCleaned ? `${baseCleaned}${extension}` : filename;
+  const cleaned = baseCleaned ? `${baseCleaned}${extension}` : decoded;
   const changed = cleaned !== filename;
 
   // Generate diff segments

@@ -498,11 +498,16 @@ body {
   background-color: rgba(0, 120, 215, 0.08);
 }
 
+.fluent-table td:first-child {
+  max-width: 0;
+}
+
 .file-title-cell {
   display: flex;
   align-items: center;
   gap: 8px;
-  max-width: 380px;
+  width: 100%;
+  min-width: 0;
 }
 
 .file-icon {
@@ -512,6 +517,8 @@ body {
 
 .file-info-stack {
   overflow: hidden;
+  flex: 1;
+  min-width: 0;
 }
 
 .file-name-text {
@@ -521,12 +528,17 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   font-size: 12.5px;
+  flex: 1;
+  min-width: 0;
 }
 
 .file-sub-meta {
   font-size: 10.5px;
   color: var(--text-tertiary);
   font-family: var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -980,6 +992,7 @@ body {
   animation: fadeIn 0.15s ease;
 }
 
+.fluent-modal,
 .fluent-modal-content {
   background-color: var(--bg-card);
   border: 1px solid var(--border-default);
@@ -1003,22 +1016,46 @@ body {
   to { opacity: 1; transform: scale(1); }
 }
 
-.modal-header {
+.modal-header,
+.fluent-modal-header {
   padding: 16px 20px;
   border-bottom: 1px solid var(--border-subtle);
   display: flex;
   align-items: center;
   justify-content: space-between;
+  background-color: var(--bg-card-header);
 }
 
-.modal-header h3 {
+.modal-header h3,
+.fluent-modal-header h3 {
   font-size: 15px;
   font-weight: 600;
   color: var(--text-primary);
   margin: 0;
 }
 
-.modal-body {
+.fluent-modal-close {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 20px;
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  transition: all 0.15s ease;
+}
+
+.fluent-modal-close:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.modal-body,
+.fluent-modal-body {
   padding: 20px;
   display: flex;
   flex-direction: column;
@@ -1027,7 +1064,8 @@ body {
   overflow-y: auto;
 }
 
-.modal-footer {
+.modal-footer,
+.fluent-modal-footer {
   padding: 14px 20px;
   border-top: 1px solid var(--border-subtle);
   display: flex;

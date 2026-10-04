@@ -340,6 +340,69 @@ function renderSearchSortIcon(col: SearchSortColumn): string {
 // Toast & Filename Cleaner Modal Helpers (Syncdrome style)
 // ═══════════════════════════════════════════════════════════════════
 
+/**
+ * Custom Fluent confirmation dialog (replaces the browser's native confirm()).
+ * Resolves true when confirmed, false when cancelled / dismissed.
+ */
+function confirmDialog(
+  message: string,
+  opts: { title?: string; confirmLabel?: string; icon?: string; danger?: boolean } = {},
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    document.getElementById("taurimule-confirm-modal")?.remove();
+    const danger = opts.danger ?? false;
+    const title = opts.title ?? (danger ? t("common.delete") : t("common.confirm"));
+    const icon = opts.icon ?? (danger ? "⚠️" : "❔");
+    const overlay = document.createElement("div");
+    overlay.id = "taurimule-confirm-modal";
+    overlay.className = "fluent-modal-overlay";
+    overlay.innerHTML = `
+      <div class="fluent-modal" role="alertdialog" aria-modal="true" style="max-width: 440px; width: 92%;">
+        <div class="fluent-modal-header">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 18px;">${icon}</span>
+            <span style="font-weight: 700; font-size: 15px;">${title}</span>
+          </div>
+          <button class="fluent-modal-close" id="btn-confirm-close">&times;</button>
+        </div>
+        <div class="fluent-modal-body" style="padding: 20px 22px;">
+          <p id="confirm-dialog-msg" style="margin: 0; font-size: 13.5px; line-height: 1.5; color: var(--text-primary); white-space: pre-line; word-break: break-word;"></p>
+        </div>
+        <div class="fluent-modal-footer">
+          <button class="btn btn-secondary" id="btn-confirm-cancel">${t("common.cancel")}</button>
+          <button class="btn ${danger ? "btn-danger" : "btn-primary"}" id="btn-confirm-ok">${opts.confirmLabel ?? t("common.confirm")}</button>
+        </div>
+      </div>`;
+    const msgEl = overlay.querySelector("#confirm-dialog-msg") as HTMLElement;
+    if (msgEl) msgEl.textContent = message;
+    document.body.appendChild(overlay);
+
+    const finish = (value: boolean) => {
+      document.removeEventListener("keydown", onKey, true);
+      overlay.remove();
+      resolve(value);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        finish(false);
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        finish(true);
+      }
+    };
+    document.addEventListener("keydown", onKey, true);
+    overlay.addEventListener("mousedown", (e) => {
+      if (e.target === overlay) finish(false);
+    });
+    overlay.querySelector("#btn-confirm-close")?.addEventListener("click", () => finish(false));
+    overlay.querySelector("#btn-confirm-cancel")?.addEventListener("click", () => finish(false));
+    const ok = overlay.querySelector("#btn-confirm-ok") as HTMLButtonElement;
+    ok.addEventListener("click", () => finish(true));
+    ok.focus();
+  });
+}
+
 function showToast(message: string, duration = 2600) {
   const existing = document.getElementById("taurimule-toast");
   if (existing) existing.remove();
@@ -1282,6 +1345,9 @@ async function renderDownloadsView(): Promise<string> {
           <button id="btn-open-downloads-folder" class="btn btn-secondary" style="display: flex; align-items: center; gap: 6px; font-weight: 500; padding: 6px 12px; white-space: nowrap;" title="${t("downloads.openFolderTitle")}">
             <span>📁</span> <span>${t("downloads.openFolder")}</span>
           </button>
+          <button id="btn-clean-all-downloads" class="btn btn-secondary" style="display: flex; align-items: center; gap: 6px; font-weight: 500; padding: 6px 12px; white-space: nowrap;" title="${t("downloads.cleanAllTitle")}">
+            <span>🧹</span> <span>${t("downloads.cleanAll")}</span>
+          </button>
           <button id="btn-add-ed2k" class="btn btn-primary" style="display: flex; align-items: center; gap: 6px; font-weight: 600; padding: 6px 14px; white-space: nowrap;">
             <span>➕</span> <span>${t("downloads.addEd2kLink")}</span>
           </button>
@@ -1297,37 +1363,37 @@ async function renderDownloadsView(): Promise<string> {
       <table class="fluent-table">
         <thead>
           <tr>
-            <th class="sortable-th ${downloadSortColumn === "name" ? "sorted-" + downloadSortDirection : ""}" data-sort-dl="name" style="width: 38%;" title="Ordenar por Nombre">
+            <th class="sortable-th ${downloadSortColumn === "name" ? "sorted-" + downloadSortDirection : ""}" data-sort-dl="name" style="width: 44%;" title="Ordenar por Nombre">
               <div class="th-content">
                 <span>${t("downloads.fileName")}</span>
                 ${renderDownloadSortIcon("name")}
               </div>
             </th>
-            <th class="sortable-th ${downloadSortColumn === "size" ? "sorted-" + downloadSortDirection : ""}" data-sort-dl="size" style="width: 12%;" title="Ordenar por Tamaño">
+            <th class="sortable-th ${downloadSortColumn === "size" ? "sorted-" + downloadSortDirection : ""}" data-sort-dl="size" style="width: 10%;" title="Ordenar por Tamaño">
               <div class="th-content">
                 <span>${t("downloads.fileSize")}</span>
                 ${renderDownloadSortIcon("size")}
               </div>
             </th>
-            <th class="sortable-th ${downloadSortColumn === "progress" ? "sorted-" + downloadSortDirection : ""}" data-sort-dl="progress" style="width: 22%;" title="Ordenar por Progreso">
+            <th class="sortable-th ${downloadSortColumn === "progress" ? "sorted-" + downloadSortDirection : ""}" data-sort-dl="progress" style="width: 17%;" title="Ordenar por Progreso">
               <div class="th-content">
                 <span>${t("downloads.fileProgress")}</span>
                 ${renderDownloadSortIcon("progress")}
               </div>
             </th>
-            <th class="sortable-th ${downloadSortColumn === "speed" ? "sorted-" + downloadSortDirection : ""}" data-sort-dl="speed" style="width: 11%;" title="Ordenar por Velocidad">
+            <th class="sortable-th ${downloadSortColumn === "speed" ? "sorted-" + downloadSortDirection : ""}" data-sort-dl="speed" style="width: 10%;" title="Ordenar por Velocidad">
               <div class="th-content">
                 <span>${t("downloads.fileSpeed")}</span>
                 ${renderDownloadSortIcon("speed")}
               </div>
             </th>
-            <th class="sortable-th ${downloadSortColumn === "sources" ? "sorted-" + downloadSortDirection : ""}" data-sort-dl="sources" style="width: 8%;" title="Ordenar por Fuentes">
+            <th class="sortable-th ${downloadSortColumn === "sources" ? "sorted-" + downloadSortDirection : ""}" data-sort-dl="sources" style="width: 7%;" title="Ordenar por Fuentes">
               <div class="th-content">
                 <span>${t("downloads.fileSources")}</span>
                 ${renderDownloadSortIcon("sources")}
               </div>
             </th>
-            <th style="width: 14%; text-align: right;">${t("downloads.actions")}</th>
+            <th style="width: 12%; text-align: right;">${t("downloads.actions")}</th>
           </tr>
         </thead>
         <tbody>
@@ -1395,9 +1461,7 @@ async function renderDownloadsView(): Promise<string> {
                     </span>
                   </td>
                   <td>
-                    <span class="metric-badge ${d.status === "Complete" ? "badge-success" : "badge-primary"}">
-                      ${d.status === "Complete" ? "100%" : `${d.sources_transferring}/${d.sources_total}`}
-                    </span>
+                    ${d.status === "Complete" ? "100%" : `${d.sources_transferring}/${d.sources_total}`}
                   </td>
                   <td style="text-align: right; white-space: nowrap;">
                     ${
@@ -1515,7 +1579,7 @@ async function renderServersView(): Promise<string> {
               : servers
                   .map(
                     (s) => `
-                <tr class="${s.is_connected ? "active-row" : ""}">
+                <tr class="${s.is_connected ? "active-row" : ""} server-row" data-ip="${s.ip}" data-port="${s.port}" data-name="${encodeURIComponent(s.name)}" data-connected="${s.is_connected}">
                   <td>
                     <div style="font-weight: 600; display: flex; align-items: center; gap: 8px;">
                       <span class="status-dot ${s.is_connected ? "" : "stopped"}"></span>
@@ -1575,31 +1639,31 @@ function renderSearchResultsTable(results: SearchResult[], query: string): strin
       <table class="fluent-table">
         <thead>
           <tr>
-            <th class="sortable-th ${searchSortColumn === "name" ? "sorted-" + searchSortDirection : ""}" data-sort-search="name" title="Ordenar por Nombre">
+            <th class="sortable-th ${searchSortColumn === "name" ? "sorted-" + searchSortDirection : ""}" data-sort-search="name" style="width: 52%;" title="Ordenar por Nombre">
               <div class="th-content">
                 <span>${t("downloads.fileName")}</span>
                 ${renderSearchSortIcon("name")}
               </div>
             </th>
-            <th class="sortable-th ${searchSortColumn === "size" ? "sorted-" + searchSortDirection : ""}" data-sort-search="size" title="Ordenar por Tamaño">
+            <th class="sortable-th ${searchSortColumn === "size" ? "sorted-" + searchSortDirection : ""}" data-sort-search="size" style="width: 12%;" title="Ordenar por Tamaño">
               <div class="th-content">
                 <span>${t("downloads.fileSize")}</span>
                 ${renderSearchSortIcon("size")}
               </div>
             </th>
-            <th class="sortable-th ${searchSortColumn === "sources" ? "sorted-" + searchSortDirection : ""}" data-sort-search="sources" title="Ordenar por Fuentes">
+            <th class="sortable-th ${searchSortColumn === "sources" ? "sorted-" + searchSortDirection : ""}" data-sort-search="sources" style="width: 10%;" title="Ordenar por Fuentes">
               <div class="th-content">
                 <span>${t("downloads.fileSources")}</span>
                 ${renderSearchSortIcon("sources")}
               </div>
             </th>
-            <th class="sortable-th ${searchSortColumn === "file_type" ? "sorted-" + searchSortDirection : ""}" data-sort-search="file_type" title="Ordenar por Tipo">
+            <th class="sortable-th ${searchSortColumn === "file_type" ? "sorted-" + searchSortDirection : ""}" data-sort-search="file_type" style="width: 12%;" title="Ordenar por Tipo">
               <div class="th-content">
-                <span>${t("downloads.fileStatus")}</span>
+                <span>${t("downloads.fileType")}</span>
                 ${renderSearchSortIcon("file_type")}
               </div>
             </th>
-            <th style="text-align: right;">${t("downloads.actions")}</th>
+            <th style="width: 14%; text-align: right;">${t("downloads.actions")}</th>
           </tr>
         </thead>
         <tbody>
@@ -1620,10 +1684,9 @@ function renderSearchResultsTable(results: SearchResult[], query: string): strin
                 </div>
               </td>
               <td>${formatSize(r.size)}</td>
-              <td><span class="metric-badge badge-primary">${t("search.sourcesBadge", { count: r.sources })}</span></td>
+              <td>${r.sources}</td>
               <td>${r.file_type}</td>
               <td style="text-align: right; white-space: nowrap;">
-                <button class="btn btn-secondary btn-icon" data-action="clean-download" data-hash="${r.hash}" data-name="${encodeURIComponent(r.name)}" title="${t("cleaner.title")}">🧹 ${t("cleaner.cleanBtn")}</button>
                 <button class="btn btn-primary btn-icon" data-action="download" data-hash="${r.hash}">⬇ ${t("search.downloadAction")}</button>
               </td>
             </tr>`
@@ -2640,6 +2703,35 @@ function attachEventListeners() {
     }
   });
 
+  document.getElementById("btn-clean-all-downloads")?.addEventListener("click", async () => {
+    const visible = cachedDownloads.filter((d) => {
+      const matchesFilter = downloadFilterQuery
+        ? d.name.toLowerCase().includes(downloadFilterQuery.toLowerCase())
+        : true;
+      const matchesCompleted = hideCompletedDownloads ? d.status !== "Complete" : true;
+      return matchesFilter && matchesCompleted;
+    });
+    const changes = visible
+      .map((d) => ({ d, res: cleanFilename(d.name) }))
+      .filter((x) => x.res.changed && x.res.cleaned && x.res.cleaned !== x.d.name);
+    if (changes.length === 0) {
+      showToast(`ℹ️ ${t("downloads.cleanAllNone")}`);
+      return;
+    }
+    if (!(await confirmDialog(t("downloads.cleanAllConfirm", { count: changes.length }), { title: t("downloads.cleanAll"), confirmLabel: t("downloads.cleanAll"), icon: "🧹" }))) return;
+    let ok = 0;
+    for (const { d, res } of changes) {
+      try {
+        await api.renameFile(d.hash, res.cleaned, d.name);
+        ok++;
+      } catch (err) {
+        console.error("Rename failed", d.name, err);
+      }
+    }
+    showToast(`✏️ ${t("downloads.cleanAllDone", { count: ok })}`);
+    await renderView();
+  });
+
   // Sortable column headers in Downloads
   document.querySelectorAll("[data-sort-dl]").forEach((th) => {
     th.addEventListener("click", (e) => {
@@ -2922,7 +3014,7 @@ function attachEventListeners() {
             renderView();
             break;
           case "delete":
-            if (confirm(t("downloads.confirmDelete"))) {
+            if (await confirmDialog(t("downloads.confirmDelete"), { confirmLabel: t("common.delete"), danger: true, icon: "🗑️" })) {
               await api.deleteDownload(hash!);
               renderView();
             }
@@ -2939,7 +3031,7 @@ function attachEventListeners() {
             const ip = target.dataset.ip;
             const port = parseInt(target.dataset.port || "0", 10);
             if (ip && port) {
-              if (confirm(t("servers.confirmRemoveServer"))) {
+              if (await confirmDialog(t("servers.confirmRemoveServer"), { confirmLabel: t("common.delete"), danger: true, icon: "🗑️" })) {
                 try {
                   await api.removeServer(ip, port);
                   showToast(`🗑️ ${t("servers.serverRemovedSuccess")}`);
@@ -3114,7 +3206,7 @@ function attachEventListeners() {
           icon: "🗑️",
           danger: true,
           onClick: async () => {
-            if (confirm(t("downloads.confirmDelete"))) {
+            if (await confirmDialog(t("downloads.confirmDelete"), { confirmLabel: t("common.delete"), danger: true, icon: "🗑️" })) {
               await api.deleteDownload(hash);
               renderView();
             }
@@ -3193,6 +3285,67 @@ function attachEventListeners() {
               showToast(`🔑 Hash copiado`);
             } catch {
               showToast(hash);
+            }
+          },
+        },
+      ];
+
+      showContextMenu(e.clientX, e.clientY, items);
+    });
+  });
+
+  // Right-click on Servers rows (Context menu)
+  document.querySelectorAll(".server-row").forEach((row) => {
+    const el = row as HTMLElement;
+    const ip = el.dataset.ip || "";
+    const port = parseInt(el.dataset.port || "0", 10);
+    const isConnected = el.dataset.connected === "true";
+
+    el.addEventListener("contextmenu", (e: MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const items: ContextMenuItem[] = [
+        {
+          label: isConnected ? t("common.disconnect") : t("common.connect"),
+          icon: isConnected ? "⏹" : "⚡",
+          onClick: async () => {
+            if (isConnected) {
+              await api.disconnectServer();
+            } else {
+              await api.connectServer(ip, port);
+            }
+            renderView();
+          },
+        },
+        "divider",
+        {
+          label: `${t("servers.serverIpLabel")}: ${ip}:${port}`,
+          icon: "📋",
+          onClick: async () => {
+            const addr = `${ip}:${port}`;
+            try {
+              await navigator.clipboard.writeText(addr);
+              showToast(`📋 Copiado: ${addr}`);
+            } catch {
+              showToast(addr);
+            }
+          },
+        },
+        "divider",
+        {
+          label: t("servers.removeServer"),
+          icon: "🗑️",
+          danger: true,
+          onClick: async () => {
+            if (await confirmDialog(t("servers.confirmRemoveServer"), { title: t("servers.removeServer"), confirmLabel: t("common.delete"), danger: true, icon: "🗑️" })) {
+              try {
+                await api.removeServer(ip, port);
+                showToast(`🗑️ ${t("servers.serverRemovedSuccess")}`);
+                renderView();
+              } catch (err) {
+                showToast(`⚠️ Error: ${err}`);
+              }
             }
           },
         },
@@ -3496,4 +3649,9 @@ listen<string>("ed2k-link-received", (event) => {
   if (link && link.startsWith("ed2k://")) {
     showAddEd2kModal(link.trim());
   }
+});
+
+// Deshabilitar globalmente el menú contextual nativo del navegador (Back, Forward, Reload, Inspect, etc.)
+window.addEventListener("contextmenu", (e: MouseEvent) => {
+  e.preventDefault();
 });

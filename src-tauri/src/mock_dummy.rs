@@ -1203,10 +1203,50 @@ fn handle_client(
                     ("{title}.Software.Edicion.Digital.Multilenguaje.iso", 2_450_000_000, 78, 65, "Program"),
                 ];
 
+                // Search scope: 0 = Local server, 1 = Global (eD2k), 2 = Kad.
+                // The value lives in the root tag 0x0400 (children flag set => name bytes 08 01),
+                // right after its children.
+                let mut search_scope: u8 = 1;
+                if let Some(pos) = payload.windows(2).position(|w| w == [0x08, 0x01]) {
+                    if pos + 9 <= payload.len() {
+                        let child_count = u16::from_be_bytes([payload[pos + 7], payload[pos + 8]]) as usize;
+                        let mut off = pos + 9;
+                        let mut ok = true;
+                        for _ in 0..child_count {
+                            if off + 7 > payload.len() {
+                                ok = false;
+                                break;
+                            }
+                            let clen = u32::from_be_bytes([payload[off + 3], payload[off + 4], payload[off + 5], payload[off + 6]]) as usize;
+                            off += 7 + clen;
+                        }
+                        if ok && off < payload.len() {
+                            search_scope = payload[off];
+                        }
+                    }
+                }
+                let scope_name = match search_scope { 0 => "Local", 2 => "Kad", _ => "Global" };
+                println!("[amuled] Search scope: {}", scope_name);
+
                 for (idx, (tpl, sz, src, comp, cat)) in templates.iter().enumerate() {
                     if !file_type.is_empty() && !cat.eq_ignore_ascii_case(&file_type) {
                         continue;
                     }
+
+                    // Each scope sees a different slice of the network:
+                    //  - Local: only the files known by the connected server (fewer sources)
+                    //  - Kad:   a different subset, reached through the DHT
+                    //  - Global: everything, with the highest source counts
+                    let (include, num, den) = match search_scope {
+                        0 => (idx % 3 != 2, 45u32, 100u32),
+                        2 => (idx % 2 == 0 || idx % 5 == 0, 70u32, 100u32),
+                        _ => (true, 100u32, 100u32),
+                    };
+                    if !include {
+                        continue;
+                    }
+                    let src = (*src * num / den).max(1);
+                    let comp = (*comp * num / den).min(src);
 
                     let formatted_name = tpl.replace("{title}", &formatted_title);
                     let mut hash = [0u8; 16];
@@ -1217,8 +1257,8 @@ fn handle_client(
                         name: formatted_name,
                         hash,
                         size: *sz,
-                        sources: *src,
-                        complete: *comp,
+                        sources: src,
+                        complete: comp,
                     });
                 }
 
