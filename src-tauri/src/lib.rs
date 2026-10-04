@@ -189,8 +189,9 @@ pub fn run() {
                 let _ = window.set_focus();
             }
             for arg in &args {
-                if arg.starts_with("ed2k://") {
-                    let _ = app.emit("ed2k-link-received", arg.clone());
+                let trimmed = arg.trim_matches('"').trim_matches('\'').trim();
+                if trimmed.starts_with("ed2k://") {
+                    let _ = app.emit("ed2k-link-received", trimmed.to_string());
                 }
             }
         }))
@@ -270,13 +271,15 @@ pub fn run() {
             let handle = app.handle().clone();
 
             // Check cold start CLI args for ed2k link
-            let cold_ed2k = std::env::args().find(|a| a.starts_with("ed2k://"));
-            if let Some(link) = cold_ed2k {
-                let handle_clone = handle.clone();
-                tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
-                    let _ = handle_clone.emit("ed2k-link-received", link);
-                });
+            for arg in std::env::args() {
+                let trimmed = arg.trim_matches('"').trim_matches('\'').trim().to_string();
+                if trimmed.starts_with("ed2k://") {
+                    let handle_clone = handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+                        let _ = handle_clone.emit("ed2k-link-received", trimmed);
+                    });
+                }
             }
 
             spawn_poller(handle.clone());

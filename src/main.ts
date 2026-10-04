@@ -3521,11 +3521,40 @@ window.addEventListener("paste", (e: ClipboardEvent) => {
   }
 });
 
-// Deep link listener: catch ed2k:// links launched from browser / protocol handler
+// Sequential queue for deep link / browser additions to prevent EC lock contention
+let addLinkQueue: Promise<void> = Promise.resolve();
+
+function enqueueAddEd2kLink(rawLink: string) {
+  const link = rawLink.trim();
+  if (!link || !link.startsWith("ed2k://")) return;
+
+  addLinkQueue = addLinkQueue.then(async () => {
+    let retries = 0;
+    while (retries < 25) {
+      try {
+        const res = await api.addEd2kLink(link);
+        showToast(`✅ ${t("downloads.linkAddedSuccess")}: ${res.name}`);
+        return;
+      } catch (err: any) {
+        const errStr = err ? err.toString() : "";
+        if ((errStr.includes("Not connected") || errStr.includes("EC connection busy")) && retries < 20) {
+          retries++;
+          await new Promise((r) => setTimeout(r, 400));
+          continue;
+        }
+        console.error("Auto-add ed2k link error:", err);
+        showToast(`⚠️ Error al añadir enlace: ${err}`);
+        return;
+      }
+    }
+  });
+}
+
+// Deep link listener: catch ed2k:// links launched from browser / protocol handler — add directly without prompting!
 listen<string>("ed2k-link-received", (event) => {
   const link = event.payload;
   if (link && link.startsWith("ed2k://")) {
-    showAddEd2kModal(link.trim());
+    enqueueAddEd2kLink(link);
   }
 });
 
