@@ -39,7 +39,7 @@ const de: Dict = {
     settings: "Einstellungen",
     preferences: "Einstellungen",
     minimizeToTray: "In den Infobereich minimieren",
-    version: "v0.1.4",
+    version: "v0.1.5",
   },
   downloads: {
     title: "Download-Warteschlange",

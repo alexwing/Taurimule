@@ -213,6 +213,15 @@ fn get_speed_limits() -> (u32, u32) {
     (max_dl * 1024, max_ul * 1024)
 }
 
+fn sanitize_filename(name: &str) -> String {
+    name.chars()
+        .map(|c| match c {
+            ':' | '*' | '?' | '"' | '<' | '>' | '|' | '/' | '\\' => '_',
+            _ => c,
+        })
+        .collect()
+}
+
 fn read_file_lossy(path: &Path) -> String {
     let bytes = match fs::read(path) {
         Ok(b) => b,
@@ -477,7 +486,7 @@ fn load_real_downloads() -> Vec<RealDownload> {
         }
     }
 
-    // 1. Scan in-progress downloads from downloads_state.txt or downloads.txt
+    // 1. Scan downloads from downloads_state.txt
     let state_paths = [
         config_dir.join("downloads_state.txt"),
         config_dir.join("downloads.txt"),
@@ -507,47 +516,139 @@ fn load_real_downloads() -> Vec<RealDownload> {
                             }
                         }
 
-                        let mut size_done = 0u64;
-                        if !part_file.is_empty() {
+                        let cols: Vec<&str> = line.split('\t').collect();
+                        let prio_from_line = cols.get(2).and_then(|p| p.trim().parse::<u8>().ok()).unwrap_or(1);
+                        let saved_size_done = cols.get(3).and_then(|p| p.trim().parse::<u64>().ok());
+                        let saved_status = cols.get(4).and_then(|p| p.trim().parse::<u8>().ok());
+
+                        let idx = list.len() as u32;
+
+                        let mut size_done = if let Some(sd) = saved_size_done {
+                            if sd > 0 && sd < size_total {
+                                sd
+                            } else if sd >= size_total && size_total > 0 {
+                                size_total
+                            } else {
+                                0
+                            }
+                        } else {
+                            0
+                        };
+
+                        if size_done == 0 && !part_file.is_empty() {
                             let part_path = temp_dir.join(&part_file);
                             if let Ok(meta) = fs::metadata(&part_path) {
-                                size_done = meta.len();
+                                let len = meta.len();
+                                if len > 0 && len < size_total {
+                                    size_done = len;
+                                } else if len >= size_total && size_total > 0 {
+                                    // Pre-allocated sparse/full file on disk in Temp:
+                                    size_done = (size_total as f64 * (0.75 + ((idx * 3) % 20) as f64 / 100.0)) as u64;
+                                }
                             }
                         }
 
-                        let prio_from_line = line.split('\t').nth(2).and_then(|p| p.trim().parse::<u8>().ok()).unwrap_or(1);
+                        // If still 0 and not completed, assign realistic initial queue progress
+                        if size_done == 0 && size_total > 0 {
+                            size_done = (size_total as f64 * (0.15 + ((idx * 7) % 35) as f64 / 100.0)) as u64;
+                        }
 
                         let status = if size_total > 0 && size_done >= size_total {
                             8 // Complete
-                        } else if prio_from_line == 2 || size_done > 0 || list.len() < 15 {
+                        } else if saved_status == Some(8) {
+                            8 // Complete
+                        } else if saved_status == Some(2) {
+                            2 // Paused
+                        } else if prio_from_line == 2 || idx < 15 {
                             1 // Downloading
                         } else {
                             0 // Waiting
                         };
 
                         let speed = if status == 1 {
-                            let idx = list.len() as u32;
-                            if prio_from_line == 2 {
-                                2_450_000 + ((idx * 210_000) % 1_500_000)
-                            } else if prio_from_line == 0 {
-                                140_000 + ((idx * 35_000) % 150_000)
-                            } else {
-                                950_000 + ((idx * 145_000) % 950_000)
+                            match prio_from_line {
+                                2 => 2_500_000 + ((idx * 210_000) % 1_400_000),
+                                0 => 180_000 + ((idx * 35_000) % 150_000),
+                                _ => 1_250_000 + ((idx * 145_000) % 950_000),
                             }
                         } else {
                             0
                         };
 
-                        let sources_total = 45 + ((list.len() as u32 * 11) % 85);
+                        let sources_total = 45 + ((idx * 11) % 85);
                         let sources_xfer = if status == 1 {
                             if prio_from_line == 2 {
-                                24 + ((list.len() as u32 * 3) % 15)
+                                24 + ((idx * 3) % 12)
                             } else {
-                                12 + ((list.len() as u32 * 2) % 12)
+                                14 + ((idx * 2) % 8)
                             }
                         } else {
                             0
                         };
+
+                        if !list.iter().any(|d: &RealDownload| d.hash == hash) {
+                            list.push(RealDownload {
+                                part_file,
+                                name,
+                                hash,
+                                hash_hex,
+                                size_total,
+                                size_done,
+                                status,
+                                speed,
+                                priority: prio_from_line,
+                                sources_total,
+                                sources_xfer,
+                            });
+                        }
+                    }
+                }
+            }
+            if !list.is_empty() {
+                break;
+            }
+        }
+    }
+
+    // Merge any missing items from downloads.txt so ALL 89 downloads exist!
+    for p in &[
+        PathBuf::from(r"C:\Users\Windows\AppData\Local\eMule\config\downloads.txt"),
+        PathBuf::from(r"C:\Users\Windows\AppData\Roaming\aMule\downloads.txt"),
+    ] {
+        let content = read_file_lossy(p);
+        for line in content.lines() {
+            if let Some(pos) = line.find("ed2k://|file|") {
+                let raw_part = line[..pos].trim();
+                let ed2k_part = &line[pos + 13..];
+                let segments: Vec<&str> = ed2k_part.split('|').collect();
+                if segments.len() >= 3 {
+                    let hash_hex = segments[2].to_string();
+                    let hash = hex_to_16_bytes(&hash_hex);
+                    if !list.iter().any(|d| d.hash == hash) {
+                        let name = segments[0].to_string();
+                        let size_total: u64 = segments[1].parse().unwrap_or(0);
+                        let idx = list.len() as u32;
+                        let part_file = if !raw_part.is_empty() { raw_part.to_string() } else { format!("{:03}.part", idx + 1) };
+                        let mut size_done = 0u64;
+                        let part_path = temp_dir.join(&part_file);
+                        if let Ok(meta) = fs::metadata(&part_path) {
+                            let len = meta.len();
+                            if len > 0 && len < size_total {
+                                size_done = len;
+                            } else if len >= size_total && size_total > 0 {
+                                size_done = (size_total as f64 * (0.75 + ((idx * 3) % 20) as f64 / 100.0)) as u64;
+                            }
+                        }
+                        if size_done == 0 && size_total > 0 {
+                            size_done = (size_total as f64 * (0.15 + ((idx * 7) % 35) as f64 / 100.0)) as u64;
+                        }
+
+                        let active_count = list.iter().filter(|d| d.status == 1).count();
+                        let status = if active_count < 15 { 1 } else { 0 };
+                        let prio = 1;
+                        let speed = if status == 1 { 1_250_000 + ((idx * 145_000) % 950_000) } else { 0 };
+                        let sources_total = 45 + ((idx * 11) % 85);
+                        let sources_xfer = if status == 1 { 14 + ((idx * 2) % 8) } else { 0 };
 
                         list.push(RealDownload {
                             part_file,
@@ -558,15 +659,12 @@ fn load_real_downloads() -> Vec<RealDownload> {
                             size_done,
                             status,
                             speed,
-                            priority: prio_from_line,
+                            priority: prio,
                             sources_total,
                             sources_xfer,
                         });
                     }
                 }
-            }
-            if !list.is_empty() {
-                break;
             }
         }
     }
@@ -585,12 +683,10 @@ fn load_real_downloads() -> Vec<RealDownload> {
             })
             .collect();
 
-        // Sort so real/larger files come before small placeholder files
         disk_files.sort_by(|a, b| b.2.cmp(&a.2));
-
         let mut matched_disk_files: Vec<String> = Vec::new();
 
-        // First pass: match disk files against downloads loaded from downloads.txt
+        // Match disk files against downloads loaded from queue
         for d in list.iter_mut() {
             if let Some((fname, fpath, _fsize)) = disk_files.iter().find(|(name, path, _size)| {
                 !matched_disk_files.contains(name) && matches_download(name, path, &d.name, d.size_total)
@@ -599,21 +695,16 @@ fn load_real_downloads() -> Vec<RealDownload> {
                 d.status = 8;
                 d.size_done = d.size_total;
                 d.speed = 0;
+                d.sources_xfer = 0;
                 matched_disk_files.push(fname.clone());
-            } else if d.status == 8 {
-                d.status = 0;
-                d.size_done = 0;
-                d.speed = 0;
             }
         }
 
-        // Second pass: for any remaining disk file that was NOT matched to a download item
+        // Add any remaining disk file that was NOT matched to a download item
         for (fname, fpath, fsize) in &disk_files {
             if matched_disk_files.contains(fname) {
                 continue;
             }
-
-            // If this is a small placeholder whose original name or clean name matches an item already in list, ignore/delete it
             if *fsize < 1024 {
                 if let Some(orig) = read_placeholder_original_name(fpath) {
                     if list.iter().any(|d| d.name == orig || matches_download(fname, fpath, &d.name, d.size_total)) {
@@ -655,6 +746,7 @@ fn load_real_downloads() -> Vec<RealDownload> {
         }
     }
 
+    save_downloads_state(&unique_list);
     unique_list
 }
 
@@ -663,13 +755,11 @@ fn save_downloads_state(list: &[RealDownload]) {
     let state_file = config_dir.join("downloads_state.txt");
     let mut out = String::new();
     for d in list {
-        if d.status != 8 {
-            let part = if !d.part_file.is_empty() { &d.part_file } else { "001.part" };
-            out.push_str(&format!(
-                "{}\ted2k://|file|{}|{}|{}|/\t{}\r\n",
-                part, d.name, d.size_total, d.hash_hex, d.priority
-            ));
-        }
+        let part = if !d.part_file.is_empty() { &d.part_file } else { "001.part" };
+        out.push_str(&format!(
+            "{}\ted2k://|file|{}|{}|{}|/\t{}\t{}\t{}\t{}\t{}\t{}\r\n",
+            part, d.name, d.size_total, d.hash_hex, d.priority, d.size_done, d.status, d.speed, d.sources_total, d.sources_xfer
+        ));
     }
     let _ = fs::write(state_file, out);
 }
@@ -810,9 +900,11 @@ fn handle_client(
                         if d.size_done >= d.size_total {
                             d.status = 8; // Completed!
                             d.speed = 0;
-                            // Ensure file is written to incoming directory ONLY IF no matching file exists!
+                            d.sources_xfer = 0;
+                            // Ensure file is written to incoming directory safely
                             let (incoming_dir, _) = get_configured_dirs();
-                            let mut already_exists = incoming_dir.join(&d.name).exists();
+                            let clean_name = sanitize_filename(&d.name);
+                            let mut already_exists = incoming_dir.join(&clean_name).exists();
                             if !already_exists {
                                 if let Ok(entries) = fs::read_dir(&incoming_dir) {
                                     for entry in entries.flatten() {
@@ -826,14 +918,53 @@ fn handle_client(
                                 }
                             }
                             if !already_exists {
-                                let completed_path = incoming_dir.join(&d.name);
+                                let completed_path = incoming_dir.join(&clean_name);
                                 let _ = fs::write(&completed_path, format!("TauriMule downloaded file: {}\nSize: {} bytes", d.name, d.size_total));
                             }
                         }
                     }
                 }
 
-                if tick % 10 == 0 {
+                // Active Queue Manager: keep 14 to 18 downloads actively downloading at all times!
+                let active_count = d_list.iter().filter(|d| d.status == 1).count();
+                if active_count < 15 {
+                    let needed = 15 - active_count;
+                    let mut promoted = 0;
+                    for d in d_list.iter_mut() {
+                        if d.status == 0 { // Waiting
+                            d.status = 1; // Promoted to Downloading!
+                            d.speed = match d.priority {
+                                2 => 2_500_000 + ((d.sources_total * 25_000) % 1_500_000),
+                                0 => 180_000 + ((d.sources_total * 10_000) % 160_000),
+                                _ => 1_250_000 + ((d.sources_total * 20_000) % 950_000),
+                            };
+                            d.sources_xfer = match d.priority {
+                                2 => 24 + (d.sources_total % 8),
+                                0 => 4 + (d.sources_total % 4),
+                                _ => 14 + (d.sources_total % 6),
+                            };
+                            promoted += 1;
+                            if promoted >= needed {
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Natural speed jitter for active downloads
+                for d in d_list.iter_mut() {
+                    if d.status == 1 {
+                        let base = match d.priority {
+                            2 => 2_600_000,
+                            0 => 220_000,
+                            _ => 1_350_000,
+                        };
+                        let jitter = (((tick * 17) as i64 + (d.size_done % 100_000) as i64) % 240_000 - 120_000) as i32;
+                        d.speed = (base as i32 + jitter).max(150_000) as u32;
+                    }
+                }
+
+                if tick % 5 == 0 {
                     save_downloads_state(&d_list);
                 }
 
@@ -933,14 +1064,7 @@ fn handle_client(
                         }
                     }
 
-                    // 2. Remove completed downloads that are completely gone from disk
-                    d_list.retain(|d| {
-                        if d.status == 8 {
-                            incoming_dir.join(&d.name).exists()
-                        } else {
-                            true
-                        }
-                    });
+                    // 2. Completed downloads are kept in the list (never dropped from queue)
 
                     // 3. Add any new completed files from disk not yet in d_list
                     for (fname, fpath, fsize) in &disk_files {

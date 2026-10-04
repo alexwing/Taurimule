@@ -1,6 +1,6 @@
 [package]
 name = "taurimule"
-version = "0.1.4"
+version = "0.1.5"
 description = "TauriMule — Modern ED2K/Kad desktop client"
 authors = ["TauriMule Contributors"]
 license = "GPL-2.0"
