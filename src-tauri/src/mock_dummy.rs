@@ -418,42 +418,50 @@ fn matches_download(candidate_name: &str, candidate_path: &Path, d_name: &str, d
     if decoded_c.eq_ignore_ascii_case(&decoded_d) || candidate_name.eq_ignore_ascii_case(&decoded_d) {
         return true;
     }
-    // 3. Placeholder content check
-    if let Some(orig) = read_placeholder_original_name(candidate_path) {
-        if orig.eq_ignore_ascii_case(d_name) || orig.eq_ignore_ascii_case(&decoded_d) {
-            return true;
-        }
-        let norm_orig = normalize_name(&orig);
-        let norm_d = normalize_name(d_name);
-        if norm_orig == norm_d && !norm_orig.is_empty() {
-            return true;
-        }
+    // 3. Sanitized match (e.g. colons converted to _)
+    let clean_d = sanitize_filename(&decoded_d);
+    let clean_c = sanitize_filename(&decoded_c);
+    if clean_c.eq_ignore_ascii_case(&clean_d) || candidate_name.eq_ignore_ascii_case(&clean_d) {
+        return true;
     }
-    // 4. Normalized words match
+    // 4. Normalized string exact match
     let norm_c = normalize_name(candidate_name);
     let norm_d = normalize_name(d_name);
-    if !norm_c.is_empty() && !norm_d.is_empty() {
-        if norm_c == norm_d {
-            return true;
-        }
-        let words_c: Vec<&str> = norm_c.split_whitespace().filter(|w| w.len() >= 3 && *w != "mkv" && *w != "avi" && *w != "mp4").collect();
-        let words_d: Vec<&str> = norm_d.split_whitespace().filter(|w| w.len() >= 3 && *w != "mkv" && *w != "avi" && *w != "mp4").collect();
-        if words_c.len() >= 2 && words_d.len() >= 2 {
-            let (shorter, longer) = if words_c.len() <= words_d.len() { (&words_c, &words_d) } else { (&words_d, &words_c) };
-            if shorter.iter().all(|w| longer.contains(w)) {
+    if !norm_c.is_empty() && norm_c == norm_d {
+        return true;
+    }
+    // 5. Size match if exact size matches AND normalized title matches
+    if d_size > 1024 {
+        if let Ok(meta) = fs::metadata(candidate_path) {
+            if meta.len() == d_size && !norm_c.is_empty() && norm_c == norm_d {
                 return true;
             }
         }
     }
-    // 5. Size match if real file (> 1KB) and at least 2 significant words match
-    if d_size > 1024 {
-        if let Ok(meta) = fs::metadata(candidate_path) {
-            if meta.len() == d_size && meta.len() > 1024 {
-                let words_c: Vec<&str> = norm_c.split_whitespace().filter(|w| w.len() >= 3).collect();
-                let words_d: Vec<&str> = norm_d.split_whitespace().filter(|w| w.len() >= 3).collect();
-                if words_c.iter().any(|w| words_d.contains(w)) {
-                    return true;
-                }
+    false
+}
+
+fn file_exists_in_incoming(name: &str, incoming_dir: &Path) -> bool {
+    if incoming_dir.join(name).exists() {
+        return true;
+    }
+    let decoded = url_decode(name);
+    if incoming_dir.join(&decoded).exists() {
+        return true;
+    }
+    let clean = sanitize_filename(name);
+    if incoming_dir.join(&clean).exists() {
+        return true;
+    }
+    let clean_decoded = sanitize_filename(&decoded);
+    if incoming_dir.join(&clean_decoded).exists() {
+        return true;
+    }
+    if let Ok(entries) = fs::read_dir(incoming_dir) {
+        for entry in entries.flatten() {
+            let efname = entry.file_name().to_string_lossy().to_string();
+            if matches_download(&efname, &entry.path(), name, 0) {
+                return true;
             }
         }
     }
@@ -523,40 +531,41 @@ fn load_real_downloads() -> Vec<RealDownload> {
 
                         let idx = list.len() as u32;
 
-                        let mut size_done = if let Some(sd) = saved_size_done {
-                            if sd > 0 && sd < size_total {
-                                sd
-                            } else if sd >= size_total && size_total > 0 {
-                                size_total
-                            } else {
-                                0
-                            }
-                        } else {
-                            0
-                        };
+                        let is_in_incoming = file_exists_in_incoming(&name, &incoming_dir);
 
-                        if size_done == 0 && !part_file.is_empty() {
-                            let part_path = temp_dir.join(&part_file);
-                            if let Ok(meta) = fs::metadata(&part_path) {
-                                let len = meta.len();
-                                if len > 0 && len < size_total {
-                                    size_done = len;
-                                } else if len >= size_total && size_total > 0 {
-                                    // Pre-allocated sparse/full file on disk in Temp:
-                                    size_done = (size_total as f64 * (0.75 + ((idx * 3) % 20) as f64 / 100.0)) as u64;
+                        let size_done = if is_in_incoming {
+                            size_total
+                        } else {
+                            let mut sd = 0u64;
+                            if !part_file.is_empty() {
+                                let part_path = temp_dir.join(&part_file);
+                                if let Ok(meta) = fs::metadata(&part_path) {
+                                    let len = meta.len();
+                                    if len > 0 && len < size_total {
+                                        sd = len;
+                                    } else if len >= size_total && size_total > 0 {
+                                        sd = (size_total as f64 * (0.45 + ((idx * 3) % 25) as f64 / 100.0)) as u64;
+                                    }
                                 }
                             }
-                        }
+                            if sd == 0 {
+                                if let Some(saved) = saved_size_done {
+                                    if saved > 0 && saved < size_total {
+                                        sd = saved;
+                                    }
+                                }
+                            }
+                            if sd == 0 && size_total > 0 {
+                                sd = (size_total as f64 * (0.08 + ((idx * 7) % 25) as f64 / 100.0)) as u64;
+                            }
+                            if sd >= size_total && size_total > 0 {
+                                sd = (size_total as f64 * 0.95) as u64;
+                            }
+                            sd
+                        };
 
-                        // If still 0 and not completed, assign realistic initial queue progress
-                        if size_done == 0 && size_total > 0 {
-                            size_done = (size_total as f64 * (0.15 + ((idx * 7) % 35) as f64 / 100.0)) as u64;
-                        }
-
-                        let status = if size_total > 0 && size_done >= size_total {
-                            8 // Complete
-                        } else if saved_status == Some(8) {
-                            8 // Complete
+                        let status = if is_in_incoming {
+                            8 // Complete only if physically in IncomingDir!
                         } else if saved_status == Some(2) {
                             2 // Paused
                         } else if prio_from_line == 2 || idx < 15 {
@@ -629,22 +638,37 @@ fn load_real_downloads() -> Vec<RealDownload> {
                         let size_total: u64 = segments[1].parse().unwrap_or(0);
                         let idx = list.len() as u32;
                         let part_file = if !raw_part.is_empty() { raw_part.to_string() } else { format!("{:03}.part", idx + 1) };
-                        let mut size_done = 0u64;
-                        let part_path = temp_dir.join(&part_file);
-                        if let Ok(meta) = fs::metadata(&part_path) {
-                            let len = meta.len();
-                            if len > 0 && len < size_total {
-                                size_done = len;
-                            } else if len >= size_total && size_total > 0 {
-                                size_done = (size_total as f64 * (0.75 + ((idx * 3) % 20) as f64 / 100.0)) as u64;
+                        let is_in_incoming = file_exists_in_incoming(&name, &incoming_dir);
+                        let size_done = if is_in_incoming {
+                            size_total
+                        } else {
+                            let mut sd = 0u64;
+                            let part_path = temp_dir.join(&part_file);
+                            if let Ok(meta) = fs::metadata(&part_path) {
+                                let len = meta.len();
+                                if len > 0 && len < size_total {
+                                    sd = len;
+                                } else if len >= size_total && size_total > 0 {
+                                    sd = (size_total as f64 * (0.45 + ((idx * 3) % 25) as f64 / 100.0)) as u64;
+                                }
                             }
-                        }
-                        if size_done == 0 && size_total > 0 {
-                            size_done = (size_total as f64 * (0.15 + ((idx * 7) % 35) as f64 / 100.0)) as u64;
-                        }
+                            if sd == 0 && size_total > 0 {
+                                sd = (size_total as f64 * (0.08 + ((idx * 7) % 25) as f64 / 100.0)) as u64;
+                            }
+                            if sd >= size_total && size_total > 0 {
+                                sd = (size_total as f64 * 0.95) as u64;
+                            }
+                            sd
+                        };
 
                         let active_count = list.iter().filter(|d| d.status == 1).count();
-                        let status = if active_count < 15 { 1 } else { 0 };
+                        let status = if is_in_incoming {
+                            8
+                        } else if active_count < 15 {
+                            1
+                        } else {
+                            0
+                        };
                         let prio = 1;
                         let speed = if status == 1 { 1_250_000 + ((idx * 145_000) % 950_000) } else { 0 };
                         let sources_total = 45 + ((idx * 11) % 85);
@@ -893,33 +917,22 @@ fn handle_client(
                 tick += 1;
                 let mut d_list = downloads.lock().unwrap();
 
-                // Increment simulated download progress realistically
+                let (incoming_dir, _) = get_configured_dirs();
+
+                // Increment simulated download progress realistically without falsely completing
                 for d in d_list.iter_mut() {
-                    if d.status == 1 && d.size_total > 0 && d.size_done < d.size_total {
-                        d.size_done = (d.size_done + (d.speed as u64) * 2).min(d.size_total);
-                        if d.size_done >= d.size_total {
-                            d.status = 8; // Completed!
+                    if d.status == 1 && d.size_total > 0 {
+                        let is_in_incoming = file_exists_in_incoming(&d.name, &incoming_dir);
+                        if is_in_incoming {
+                            d.status = 8; // Physical file in IncomingDir!
+                            d.size_done = d.size_total;
                             d.speed = 0;
                             d.sources_xfer = 0;
-                            // Ensure file is written to incoming directory safely
-                            let (incoming_dir, _) = get_configured_dirs();
-                            let clean_name = sanitize_filename(&d.name);
-                            let mut already_exists = incoming_dir.join(&clean_name).exists();
-                            if !already_exists {
-                                if let Ok(entries) = fs::read_dir(&incoming_dir) {
-                                    for entry in entries.flatten() {
-                                        let efname = entry.file_name().to_string_lossy().to_string();
-                                        if matches_download(&efname, &entry.path(), &d.name, d.size_total) {
-                                            d.name = efname;
-                                            already_exists = true;
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                            if !already_exists {
-                                let completed_path = incoming_dir.join(&clean_name);
-                                let _ = fs::write(&completed_path, format!("TauriMule downloaded file: {}\nSize: {} bytes", d.name, d.size_total));
+                        } else {
+                            // Progress download up to at most 98%, never mark completed unless in IncomingDir
+                            let max_bytes = (d.size_total as f64 * 0.98) as u64;
+                            if d.size_done < max_bytes {
+                                d.size_done = (d.size_done + (d.speed as u64) * 2).min(max_bytes);
                             }
                         }
                     }

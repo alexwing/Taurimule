@@ -37,7 +37,7 @@ const en = {
     settings: "Settings",
     preferences: "Preferences",
     minimizeToTray: "Minimize to tray",
-    version: "v0.1.5",
+    version: "v0.1.6",
   },
   downloads: {
     title: "Download Queue",
