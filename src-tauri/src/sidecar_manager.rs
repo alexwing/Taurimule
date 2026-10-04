@@ -112,7 +112,7 @@ pub async fn start_amuled(handle: &AppHandle) -> Result<(), String> {
 }
 
 /// Connect to the running amuled daemon via EC protocol.
-async fn connect_ec(handle: &AppHandle) -> Result<(), String> {
+pub(crate) async fn connect_ec(handle: &AppHandle) -> Result<(), String> {
     let state = handle.state::<AppState>();
 
     let connection =

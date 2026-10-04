@@ -542,17 +542,6 @@ impl EcConnection {
         Ok(())
     }
 
-    /// Rename a download (partfile or completed file) in eMule's queue.
-    pub async fn rename_file(&mut self, hash_hex: &str, new_name: &str) -> Result<(), String> {
-        let hash = hex_to_hash16(hash_hex)?;
-        let mut pkt = EcPacket::new(EC_OP_RENAME_FILE);
-        let mut file_tag = EcTag::new_hash16(EC_TAG_PARTFILE, &hash);
-        file_tag.add_child(EcTag::new_string(EC_TAG_PARTFILE_NAME, new_name));
-        pkt.add_tag(file_tag);
-        self.request(&pkt).await?;
-        Ok(())
-    }
-
     /// Get the upload queue.
     pub async fn get_upload_queue(&mut self) -> Result<Vec<UploadInfo>, String> {
         let mut pkt = EcPacket::new(EC_OP_GET_ULOAD_QUEUE);

@@ -3,28 +3,19 @@ use tauri::State;
 use crate::AppState;
 use crate::ec_client::types::DownloadInfo;
 
+/// Returns the download queue exactly as reported by the daemon (single source of truth).
+/// No disk lookups and no name rewriting happen here.
 #[tauri::command]
 pub async fn get_download_queue(
     state: State<'_, AppState>,
 ) -> Result<Vec<DownloadInfo>, String> {
-    let mut ec = state.ec.lock().await;
-    let conn = ec.as_mut().ok_or("Not connected to amuled")?;
-    let mut items = conn.get_download_queue().await?;
+    crate::ec_call!(state.ec, |c| c.get_download_queue())
+}
 
-    // Enhance completed items with actual filename on disk if renamed
-    for item in items.iter_mut() {
-        if item.status == "Complete" || item.progress >= 1.0 {
-            if let Some(target) = resolve_download_file(&item.name, Some(&item.hash), None) {
-                if let Some(fname) = target.file_name().and_then(|f| f.to_str()) {
-                    if fname != item.name {
-                        item.name = fname.to_string();
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(items)
+/// Returns the last snapshot produced by the backend poller (for initial UI load).
+#[tauri::command]
+pub fn get_snapshot(state: State<'_, AppState>) -> crate::Snapshot {
+    state.snapshot.lock().map(|s| s.clone()).unwrap_or_default()
 }
 
 #[tauri::command]
@@ -32,9 +23,7 @@ pub async fn download_file(
     state: State<'_, AppState>,
     hash: String,
 ) -> Result<(), String> {
-    let mut ec = state.ec.lock().await;
-    let conn = ec.as_mut().ok_or("Not connected to amuled")?;
-    conn.download_search_result(&hash).await
+    crate::ec_call!(state.ec, |c| c.download_search_result(&hash))
 }
 
 struct ParsedEd2kLink {
@@ -51,10 +40,7 @@ fn parse_ed2k_link(link: &str) -> Option<ParsedEd2kLink> {
     let parts: Vec<&str> = rest.split('|').collect();
     if parts.len() >= 3 {
         let raw_name = parts[0];
-        let mut size: u64 = parts[1].parse().unwrap_or(0);
-        if size == 0 {
-            size = 2_150_000_000;
-        }
+        let size: u64 = parts[1].parse().unwrap_or(0);
         let hash = parts[2].to_uppercase();
         if hash.len() == 32 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
             let name = url_decode(raw_name);
@@ -64,10 +50,25 @@ fn parse_ed2k_link(link: &str) -> Option<ParsedEd2kLink> {
     None
 }
 
+fn pending_info(parsed: ParsedEd2kLink) -> DownloadInfo {
+    DownloadInfo {
+        hash: parsed.hash,
+        name: parsed.name,
+        size_total: parsed.size,
+        size_done: 0,
+        progress: 0.0,
+        speed: 0.0,
+        sources_total: 0,
+        sources_transferring: 0,
+        priority: "Normal".to_string(),
+        status: "Waiting".to_string(),
+        eta_seconds: None,
+    }
+}
+
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
 pub struct AddEd2kItem {
     pub link: String,
-    pub clean_name: Option<String>,
 }
 
 #[tauri::command]
@@ -77,45 +78,23 @@ pub async fn add_ed2k_links(
 ) -> Result<Vec<DownloadInfo>, String> {
     log::info!("Adding {} eD2k links in batch", items.len());
     let mut results = Vec::new();
+    let mut last_err: Option<String> = None;
 
     for item in items {
         if let Some(parsed) = parse_ed2k_link(&item.link) {
-            // 1. Send EC_OP_ADD_LINK to amuled daemon
-            {
-                let mut ec = state.ec.lock().await;
-                if let Some(conn) = ec.as_mut() {
-                    let _ = conn.add_ed2k_link(&item.link).await;
-                }
+            let link = item.link.trim().to_string();
+            match crate::ec_call!(state.ec, |c| c.add_ed2k_link(&link)) {
+                Ok(()) => results.push(pending_info(parsed)),
+                Err(e) => last_err = Some(e),
             }
-
-            let final_name = item
-                .clean_name
-                .filter(|n| !n.trim().is_empty())
-                .unwrap_or_else(|| parsed.name.clone());
-
-            if final_name != parsed.name {
-                let mut ec = state.ec.lock().await;
-                if let Some(conn) = ec.as_mut() {
-                    let _ = conn.rename_file(&parsed.hash, &final_name).await;
-                }
-            }
-
-            results.push(DownloadInfo {
-                hash: parsed.hash,
-                name: final_name,
-                size_total: parsed.size,
-                size_done: 0,
-                progress: 0.0,
-                speed: 185_000.0,
-                sources_total: 165,
-                sources_transferring: 9,
-                priority: "Normal".to_string(),
-                status: "Downloading".to_string(),
-                eta_seconds: if parsed.size > 0 { Some(parsed.size / 185_000) } else { None },
-            });
         }
     }
 
+    if results.is_empty() {
+        if let Some(e) = last_err {
+            return Err(e);
+        }
+    }
     Ok(results)
 }
 
@@ -123,7 +102,6 @@ pub async fn add_ed2k_links(
 pub async fn add_ed2k_link(
     state: State<'_, AppState>,
     link: String,
-    clean_name: Option<String>,
 ) -> Result<DownloadInfo, String> {
     log::info!("Adding eD2k link: {}", link);
 
@@ -131,10 +109,7 @@ pub async fn add_ed2k_link(
     if lines.len() > 1 {
         let items: Vec<AddEd2kItem> = lines
             .into_iter()
-            .map(|l| AddEd2kItem {
-                link: l.trim().to_string(),
-                clean_name: None,
-            })
+            .map(|l| AddEd2kItem { link: l.trim().to_string() })
             .collect();
         let list = add_ed2k_links(state, items).await?;
         return list.into_iter().next().ok_or_else(|| "No se pudo añadir ningún enlace".to_string());
@@ -144,67 +119,24 @@ pub async fn add_ed2k_link(
         "El enlace eD2k no tiene un formato válido. Formato esperado: ed2k://|file|nombre|tamaño|hash|/".to_string()
     })?;
 
-    // 1. Send EC_OP_ADD_LINK to amuled daemon
-    {
-        let mut ec = state.ec.lock().await;
-        let conn = ec.as_mut().ok_or("Not connected to amuled")?;
-        conn.add_ed2k_link(&link).await?;
-    }
-
-    let final_name = clean_name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| parsed.name.clone());
-
-    // 2. If clean_name is different from parsed.name, notify daemon to rename it
-    if final_name != parsed.name {
-        let mut ec = state.ec.lock().await;
-        if let Some(conn) = ec.as_mut() {
-            let _ = conn.rename_file(&parsed.hash, &final_name).await;
-        }
-    }
-
-    Ok(DownloadInfo {
-        hash: parsed.hash,
-        name: final_name,
-        size_total: parsed.size,
-        size_done: 0,
-        progress: 0.0,
-        speed: 185_000.0,
-        sources_total: 165,
-        sources_transferring: 9,
-        priority: "Normal".to_string(),
-        status: "Downloading".to_string(),
-        eta_seconds: if parsed.size > 0 { Some(parsed.size / 185_000) } else { None },
-    })
-}
-
-
-#[tauri::command]
-pub async fn pause_download(
-    state: State<'_, AppState>,
-    hash: String,
-) -> Result<(), String> {
-    let mut ec = state.ec.lock().await;
-    let conn = ec.as_mut().ok_or("Not connected to amuled")?;
-    conn.pause_download(&hash).await
+    let trimmed = link.trim().to_string();
+    crate::ec_call!(state.ec, |c| c.add_ed2k_link(&trimmed))?;
+    Ok(pending_info(parsed))
 }
 
 #[tauri::command]
-pub async fn resume_download(
-    state: State<'_, AppState>,
-    hash: String,
-) -> Result<(), String> {
-    let mut ec = state.ec.lock().await;
-    let conn = ec.as_mut().ok_or("Not connected to amuled")?;
-    conn.resume_download(&hash).await
+pub async fn pause_download(state: State<'_, AppState>, hash: String) -> Result<(), String> {
+    crate::ec_call!(state.ec, |c| c.pause_download(&hash))
 }
 
 #[tauri::command]
-pub async fn delete_download(
-    state: State<'_, AppState>,
-    hash: String,
-) -> Result<(), String> {
-    let mut ec = state.ec.lock().await;
-    let conn = ec.as_mut().ok_or("Not connected to amuled")?;
-    conn.delete_download(&hash).await
+pub async fn resume_download(state: State<'_, AppState>, hash: String) -> Result<(), String> {
+    crate::ec_call!(state.ec, |c| c.resume_download(&hash))
+}
+
+#[tauri::command]
+pub async fn delete_download(state: State<'_, AppState>, hash: String) -> Result<(), String> {
+    crate::ec_call!(state.ec, |c| c.delete_download(&hash))
 }
 
 #[tauri::command]
@@ -213,19 +145,12 @@ pub async fn set_download_priority(
     hash: String,
     priority: u8,
 ) -> Result<(), String> {
-    let mut ec = state.ec.lock().await;
-    let conn = ec.as_mut().ok_or("Not connected to amuled")?;
-    conn.set_download_priority(&hash, priority).await
+    crate::ec_call!(state.ec, |c| c.set_download_priority(&hash, priority))
 }
 
 #[tauri::command]
-pub async fn request_more_sources(
-    state: State<'_, AppState>,
-    hash: String,
-) -> Result<(), String> {
-    let mut ec = state.ec.lock().await;
-    let conn = ec.as_mut().ok_or("Not connected to amuled")?;
-    conn.request_more_sources(&hash).await
+pub async fn request_more_sources(state: State<'_, AppState>, hash: String) -> Result<(), String> {
+    crate::ec_call!(state.ec, |c| c.request_more_sources(&hash))
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -543,85 +468,6 @@ pub fn show_in_folder(
         let _ = (name, hash, path);
         Err("Unsupported on this OS".into())
     }
-}
-
-/// eMule Rename Flow: Renames the download object in eMule's queue by hash via EC protocol,
-/// and renames the physical completed file on disk in incoming_dir if present.
-#[tauri::command]
-pub async fn rename_file(
-    state: State<'_, AppState>,
-    hash: String,
-    new_name: String,
-    old_name: Option<String>,
-) -> Result<String, String> {
-    log::info!("Renaming eMule download [hash: {}] old: {:?} -> '{}'", hash, old_name, new_name);
-
-    let clean_new = new_name.trim();
-    if clean_new.is_empty() {
-        return Err("El nuevo nombre no puede estar vacío".into());
-    }
-
-    // 1. Notify eMule daemon via EC protocol (OP 0x25 EC_OP_RENAME_FILE)
-    {
-        let mut ec = state.ec.lock().await;
-        if let Some(conn) = ec.as_mut() {
-            if let Err(e) = conn.rename_file(&hash, clean_new).await {
-                log::warn!("Daemon EC rename returned: {}", e);
-            }
-        }
-    }
-
-    // 2. If the file exists on disk (completed download), rename it on disk too
-    #[cfg(windows)]
-    {
-        use std::fs;
-        let incoming_dir_buf = if let Ok(config) = super::config::get_config() {
-            PathBuf::from(config.incoming_dir)
-        } else {
-            super::config::get_default_incoming_dir()
-        };
-        let incoming_dir = incoming_dir_buf.as_path();
-
-        let mut found_file: Option<PathBuf> = None;
-        if let Some(ref oname) = old_name {
-            found_file = resolve_download_file(oname, Some(&hash), None);
-        }
-        if found_file.is_none() {
-            found_file = resolve_download_file(clean_new, Some(&hash), None);
-        }
-        if found_file.is_none() {
-            if let Ok(entries) = fs::read_dir(incoming_dir) {
-                for entry in entries.flatten() {
-                    let p = entry.path();
-                    if p.is_file() {
-                        let fname = entry.file_name().to_string_lossy().to_string();
-                        let mut calc_hash = [0u8; 16];
-                        for (i, b) in fname.bytes().enumerate() {
-                            calc_hash[i % 16] = calc_hash[i % 16].wrapping_add(b);
-                        }
-                        let hex: String = calc_hash.iter().map(|b| format!("{:02X}", b)).collect();
-                        if hex.eq_ignore_ascii_case(&hash) {
-                            found_file = Some(p);
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        if let Some(src_path) = found_file {
-            let parent = src_path.parent().unwrap_or(incoming_dir);
-            let dest_path = parent.join(clean_new);
-            if src_path != dest_path {
-                log::info!("Renaming physical file on disk: {:?} -> {:?}", src_path, dest_path);
-                if let Err(e) = fs::rename(&src_path, &dest_path) {
-                    log::warn!("Failed to rename physical file on disk: {}", e);
-                }
-            }
-        }
-    }
-
-    Ok(clean_new.to_string())
 }
 
 #[cfg(test)]

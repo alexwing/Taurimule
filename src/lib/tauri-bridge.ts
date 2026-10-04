@@ -89,6 +89,15 @@ export interface ImportResult {
   temp_dir?: string;
 }
 
+export interface Snapshot {
+  downloads: DownloadInfo[];
+  stats: GlobalStats | null;
+  uploads: UploadInfo[];
+  connected: boolean;
+  error?: string | null;
+  updated_at: number;
+}
+
 export const api = {
   // Daemon lifecycle
   startDaemon: () => invoke<DaemonStatus>('start_daemon'),
@@ -112,6 +121,7 @@ export const api = {
   stopSearch: () => invoke<void>('stop_search'),
 
   // Downloads
+  getSnapshot: () => invoke<Snapshot>('get_snapshot'),
   getDownloadQueue: () => invoke<DownloadInfo[]>('get_download_queue'),
   downloadFile: (hash: string) => invoke<void>('download_file', { hash }),
   pauseDownload: (hash: string) => invoke<void>('pause_download', { hash }),
@@ -124,8 +134,7 @@ export const api = {
   launchFile: (name: string, hash?: string, path?: string) => invoke<void>('launch_file', { name, hash, path }),
   showInFolder: (name?: string, hash?: string, path?: string) => invoke<void>('show_in_folder', { name, hash, path }),
   openDownloadsFolder: () => invoke<void>('open_downloads_folder'),
-  renameFile: (hash: string, newName: string, oldName?: string) => invoke<string>('rename_file', { hash, newName, oldName }),
-  addEd2kLink: (link: string, cleanName?: string) => invoke<DownloadInfo>('add_ed2k_link', { link, cleanName }),
+  addEd2kLink: (link: string) => invoke<DownloadInfo>('add_ed2k_link', { link }),
   addEd2kLinks: (items: AddEd2kItem[]) => invoke<DownloadInfo[]>('add_ed2k_links', { items }),
 
   // Uploads
@@ -147,7 +156,6 @@ export const api = {
 
 export interface AddEd2kItem {
   link: string;
-  clean_name?: string;
 }
 
 

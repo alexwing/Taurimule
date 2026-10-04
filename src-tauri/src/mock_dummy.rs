@@ -40,7 +40,6 @@ const EC_OP_PARTFILE_PAUSE: u8 = 0x19;
 const EC_OP_PARTFILE_RESUME: u8 = 0x1A;
 const EC_OP_PARTFILE_PRIO_SET: u8 = 0x1C;
 const EC_OP_PARTFILE_DELETE: u8 = 0x1D;
-const EC_OP_RENAME_FILE: u8 = 0x25;
 const EC_OP_SEARCH_START: u8 = 0x26;
 const EC_OP_SEARCH_STOP: u8 = 0x27;
 const EC_OP_SEARCH_RESULTS: u8 = 0x28;
@@ -388,113 +387,11 @@ fn normalize_name(s: &str) -> String {
     cleaned.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn read_placeholder_original_name(path: &Path) -> Option<String> {
-    if let Ok(meta) = fs::metadata(path) {
-        if meta.len() < 2048 {
-            if let Ok(content) = fs::read_to_string(path) {
-                for line in content.lines() {
-                    let trimmed = line.trim();
-                    if let Some(rest) = trimmed.strip_prefix("TauriMule downloaded file:") {
-                        let name = rest.trim();
-                        if !name.is_empty() {
-                            return Some(name.to_string());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
-fn matches_download(candidate_name: &str, candidate_path: &Path, d_name: &str, d_size: u64) -> bool {
-    // 1. Exact match (case insensitive)
-    if candidate_name.eq_ignore_ascii_case(d_name) {
-        return true;
-    }
-    // 2. URL decode match
-    let decoded_d = url_decode(d_name);
-    let decoded_c = url_decode(candidate_name);
-    if decoded_c.eq_ignore_ascii_case(&decoded_d) || candidate_name.eq_ignore_ascii_case(&decoded_d) {
-        return true;
-    }
-    // 3. Sanitized match (e.g. colons converted to _)
-    let clean_d = sanitize_filename(&decoded_d);
-    let clean_c = sanitize_filename(&decoded_c);
-    if clean_c.eq_ignore_ascii_case(&clean_d) || candidate_name.eq_ignore_ascii_case(&clean_d) {
-        return true;
-    }
-    // 4. Normalized string exact match
-    let norm_c = normalize_name(candidate_name);
-    let norm_d = normalize_name(d_name);
-    if !norm_c.is_empty() && norm_c == norm_d {
-        return true;
-    }
-    // 5. Size match if exact size matches AND normalized title matches
-    if d_size > 1024 {
-        if let Ok(meta) = fs::metadata(candidate_path) {
-            if meta.len() == d_size && !norm_c.is_empty() && norm_c == norm_d {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-fn file_exists_in_incoming(name: &str, incoming_dir: &Path) -> bool {
-    if incoming_dir.join(name).exists() {
-        return true;
-    }
-    let decoded = url_decode(name);
-    if incoming_dir.join(&decoded).exists() {
-        return true;
-    }
-    let clean = sanitize_filename(name);
-    if incoming_dir.join(&clean).exists() {
-        return true;
-    }
-    let clean_decoded = sanitize_filename(&decoded);
-    if incoming_dir.join(&clean_decoded).exists() {
-        return true;
-    }
-    if let Ok(entries) = fs::read_dir(incoming_dir) {
-        for entry in entries.flatten() {
-            let efname = entry.file_name().to_string_lossy().to_string();
-            if matches_download(&efname, &entry.path(), name, 0) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 fn load_real_downloads() -> Vec<RealDownload> {
     let mut list = Vec::new();
-    let (incoming_dir, temp_dir) = get_configured_dirs();
     let config_dir = get_config_dir();
 
-    // Map original hashes to their real part files from downloads.txt
-    let mut original_part_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    for p in &[
-        PathBuf::from(r"C:\Users\Windows\AppData\Local\eMule\config\downloads.txt"),
-        PathBuf::from(r"C:\Users\Windows\AppData\Roaming\aMule\downloads.txt"),
-        config_dir.join("downloads.txt"),
-    ] {
-        let content = read_file_lossy(p);
-        for line in content.lines() {
-            if let Some(pos) = line.find("ed2k://|file|") {
-                let part = line[..pos].trim().to_string();
-                let ed2k = &line[pos + 13..];
-                let segs: Vec<&str> = ed2k.split('|').collect();
-                if segs.len() >= 3 && !part.is_empty() {
-                    let hash_hex = segs[2].to_uppercase();
-                    original_part_map.insert(hash_hex, part);
-                }
-            }
-        }
-    }
-
-    // 1. Scan downloads from downloads_state.txt
+    // 1. Scan downloads from downloads_state.txt (or fallback to downloads.txt)
     let state_paths = [
         config_dir.join("downloads_state.txt"),
         config_dir.join("downloads.txt"),
@@ -519,13 +416,11 @@ fn load_real_downloads() -> Vec<RealDownload> {
                         let hash_hex = segments[2].to_string();
                         let hash = hex_to_16_bytes(&hash_hex);
 
-                        let mut part_file = raw_part.to_string();
-                        let hash_upper = hash_hex.to_uppercase();
-                        if let Some(real_part) = original_part_map.get(&hash_upper) {
-                            if part_file.is_empty() || part_file == "001.part" {
-                                part_file = real_part.clone();
-                            }
-                        }
+                        let part_file = if !raw_part.is_empty() {
+                            raw_part.to_string()
+                        } else {
+                            format!("{:03}.part", list.len() + 1)
+                        };
 
                         let cols: Vec<&str> = line.split('\t').collect();
                         let prio_from_line = cols.get(2).and_then(|p| p.trim().parse::<u8>().ok()).unwrap_or(1);
@@ -534,47 +429,22 @@ fn load_real_downloads() -> Vec<RealDownload> {
 
                         let idx = list.len() as u32;
 
-                        let is_in_incoming = file_exists_in_incoming(&name, &incoming_dir);
-
-                        let size_done = if is_in_incoming {
-                            size_total
-                        } else {
-                            let mut sd = 0u64;
-                            if !part_file.is_empty() {
-                                let part_path = temp_dir.join(&part_file);
-                                if let Ok(meta) = fs::metadata(&part_path) {
-                                    let len = meta.len();
-                                    if len > 0 && len < size_total {
-                                        sd = len;
-                                    } else if len >= size_total && size_total > 0 {
-                                        sd = (size_total as f64 * (0.45 + ((idx * 3) % 25) as f64 / 100.0)) as u64;
-                                    }
-                                }
-                            }
-                            if sd == 0 {
-                                if let Some(saved) = saved_size_done {
-                                    if saved > 0 && saved < size_total {
-                                        sd = saved;
-                                    }
-                                }
-                            }
-                            if sd == 0 && size_total > 0 {
-                                sd = (size_total as f64 * (0.08 + ((idx * 7) % 25) as f64 / 100.0)) as u64;
-                            }
-                            if sd >= size_total && size_total > 0 {
-                                sd = (size_total as f64 * 0.95) as u64;
-                            }
-                            sd
+                        let status = match saved_status {
+                            Some(8) => 8, // Complete
+                            Some(2) => 2, // Paused
+                            Some(1) => 1, // Downloading
+                            Some(0) => 0, // Waiting
+                            _ => if idx < 15 { 1 } else { 0 },
                         };
 
-                        let status = if is_in_incoming {
-                            8 // Complete only if physically in IncomingDir!
-                        } else if saved_status == Some(2) {
-                            2 // Paused
-                        } else if prio_from_line == 2 || idx < 15 {
-                            1 // Downloading
+                        let size_done = if status == 8 {
+                            size_total
+                        } else if let Some(sd) = saved_size_done {
+                            sd.min(size_total)
+                        } else if status == 1 {
+                            (size_total as f64 * (0.08 + ((idx * 7) % 25) as f64 / 100.0)) as u64
                         } else {
-                            0 // Waiting
+                            0
                         };
 
                         let speed = if status == 1 {
@@ -622,156 +492,11 @@ fn load_real_downloads() -> Vec<RealDownload> {
         }
     }
 
-    // Merge any missing items from downloads.txt so ALL 89 downloads exist!
-    for p in &[
-        PathBuf::from(r"C:\Users\Windows\AppData\Local\eMule\config\downloads.txt"),
-        PathBuf::from(r"C:\Users\Windows\AppData\Roaming\aMule\downloads.txt"),
-    ] {
-        let content = read_file_lossy(p);
-        for line in content.lines() {
-            if let Some(pos) = line.find("ed2k://|file|") {
-                let raw_part = line[..pos].trim();
-                let ed2k_part = &line[pos + 13..];
-                let segments: Vec<&str> = ed2k_part.split('|').collect();
-                if segments.len() >= 3 {
-                    let hash_hex = segments[2].to_string();
-                    let hash = hex_to_16_bytes(&hash_hex);
-                    if !list.iter().any(|d| d.hash == hash) {
-                        let name = segments[0].to_string();
-                        let mut size_total: u64 = segments[1].parse().unwrap_or(0);
-                        if size_total == 0 {
-                            size_total = 2_150_000_000;
-                        }
-                        let idx = list.len() as u32;
-                        let part_file = if !raw_part.is_empty() { raw_part.to_string() } else { format!("{:03}.part", idx + 1) };
-                        let is_in_incoming = file_exists_in_incoming(&name, &incoming_dir);
-                        let size_done = if is_in_incoming {
-                            size_total
-                        } else {
-                            let mut sd = 0u64;
-                            let part_path = temp_dir.join(&part_file);
-                            if let Ok(meta) = fs::metadata(&part_path) {
-                                let len = meta.len();
-                                if len > 0 && len < size_total {
-                                    sd = len;
-                                } else if len >= size_total && size_total > 0 {
-                                    sd = (size_total as f64 * (0.45 + ((idx * 3) % 25) as f64 / 100.0)) as u64;
-                                }
-                            }
-                            if sd == 0 && size_total > 0 {
-                                sd = (size_total as f64 * (0.08 + ((idx * 7) % 25) as f64 / 100.0)) as u64;
-                            }
-                            if sd >= size_total && size_total > 0 {
-                                sd = (size_total as f64 * 0.95) as u64;
-                            }
-                            sd
-                        };
-
-                        let active_count = list.iter().filter(|d| d.status == 1).count();
-                        let status = if is_in_incoming {
-                            8
-                        } else if active_count < 15 {
-                            1
-                        } else {
-                            0
-                        };
-                        let prio = 1;
-                        let speed = if status == 1 { 1_250_000 + ((idx * 145_000) % 950_000) } else { 0 };
-                        let sources_total = 45 + ((idx * 11) % 85);
-                        let sources_xfer = if status == 1 { 14 + ((idx * 2) % 8) } else { 0 };
-
-                        list.push(RealDownload {
-                            part_file,
-                            name,
-                            hash,
-                            hash_hex,
-                            size_total,
-                            size_done,
-                            status,
-                            speed,
-                            priority: prio,
-                            sources_total,
-                            sources_xfer,
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    // 2. Scan completed files from user's configured Incoming folder
-    if let Ok(entries) = fs::read_dir(&incoming_dir) {
-        let mut disk_files: Vec<(String, PathBuf, u64)> = entries
-            .flatten()
-            .filter_map(|e| {
-                let meta = e.metadata().ok()?;
-                if meta.is_file() {
-                    Some((e.file_name().to_string_lossy().to_string(), e.path(), meta.len()))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        disk_files.sort_by(|a, b| b.2.cmp(&a.2));
-        let mut matched_disk_files: Vec<String> = Vec::new();
-
-        // Match disk files against downloads loaded from queue
-        for d in list.iter_mut() {
-            if let Some((fname, fpath, _fsize)) = disk_files.iter().find(|(name, path, _size)| {
-                !matched_disk_files.contains(name) && matches_download(name, path, &d.name, d.size_total)
-            }) {
-                d.name = fname.clone();
-                d.status = 8;
-                d.size_done = d.size_total;
-                d.speed = 0;
-                d.sources_xfer = 0;
-                matched_disk_files.push(fname.clone());
-            }
-        }
-
-        // Add any remaining disk file that was NOT matched to a download item
-        for (fname, fpath, fsize) in &disk_files {
-            if matched_disk_files.contains(fname) {
-                continue;
-            }
-            if *fsize < 1024 {
-                if let Some(orig) = read_placeholder_original_name(fpath) {
-                    if list.iter().any(|d| d.name == orig || matches_download(fname, fpath, &d.name, d.size_total)) {
-                        let _ = fs::remove_file(fpath);
-                        continue;
-                    }
-                }
-            }
-
-            let mut hash = [0u8; 16];
-            for (i, b) in fname.bytes().enumerate() {
-                hash[i % 16] = hash[i % 16].wrapping_add(b);
-            }
-            let hash_hex: String = hash.iter().map(|b| format!("{:02X}", b)).collect();
-            list.push(RealDownload {
-                part_file: String::new(),
-                name: fname.clone(),
-                hash,
-                hash_hex,
-                size_total: *fsize,
-                size_done: *fsize,
-                status: 8, // Complete
-                speed: 0,
-                priority: 1,
-                sources_total: 0,
-                sources_xfer: 0,
-            });
-            matched_disk_files.push(fname.clone());
-        }
-    }
-
-    // Deduplicate list by lowercase name
+    // Deduplicate list strictly by hash
     let mut unique_list = Vec::new();
-    let mut seen_names = std::collections::HashSet::new();
+    let mut seen_hashes = std::collections::HashSet::new();
     for d in list {
-        let key = d.name.to_lowercase();
-        if seen_names.insert(key) {
+        if seen_hashes.insert(d.hash) {
             unique_list.push(d);
         }
     }
@@ -923,69 +648,22 @@ fn handle_client(
                 tick += 1;
                 let mut d_list = downloads.lock().unwrap();
 
-                let (incoming_dir, temp_dir) = get_configured_dirs();
-
-                // Increment download progress and complete to incoming_dir when reaching 100%
+                // Increment download progress in-memory; complete when reaching 100%
                 for d in d_list.iter_mut() {
                     if d.size_total == 0 {
                         d.size_total = 2_150_000_000;
                     }
                     if d.status == 1 && d.size_total > 0 {
-                        let is_in_incoming = file_exists_in_incoming(&d.name, &incoming_dir);
-                        if is_in_incoming {
-                            d.status = 8;
-                            d.size_done = d.size_total;
-                            d.speed = 0;
-                            d.sources_xfer = 0;
-                            continue;
-                        }
-
                         // Progress download by speed * 2 (each tick represents ~2s)
                         d.size_done = (d.size_done + (d.speed as u64) * 2).min(d.size_total);
 
-                        // If download reaches 100%, complete it!
+                        // If download reaches 100%, complete it purely in memory!
                         if d.size_done >= d.size_total {
                             d.size_done = d.size_total;
                             d.status = 8;
                             d.speed = 0;
                             d.sources_xfer = 0;
-
-                            let clean_name = sanitize_filename(&url_decode(&d.name));
-                            d.name = clean_name.clone();
-
-                            let incoming_path = incoming_dir.join(&clean_name);
-                            let part_file = d.part_file.clone();
-                            let size_total = d.size_total;
-                            let temp_dir_clone = temp_dir.clone();
-
-                            // Move/copy cross-volume file asynchronously in background thread
-                            // so amuled doesn't block EC socket responses and freeze the UI
-                            std::thread::spawn(move || {
-                                if !incoming_path.exists() {
-                                    let part_path = if !part_file.is_empty() {
-                                        temp_dir_clone.join(&part_file)
-                                    } else {
-                                        PathBuf::new()
-                                    };
-
-                                    if !part_file.is_empty() && part_path.exists() {
-                                        // Only move real .part file if it actually contains real data
-                                        let part_len = fs::metadata(&part_path).map(|m| m.len()).unwrap_or(0);
-                                        if part_len > 0 {
-                                            // Move part file from Temp to Incoming (handles cross-volume move C: -> D:)
-                                            if fs::rename(&part_path, &incoming_path).is_err() {
-                                                if fs::copy(&part_path, &incoming_path).is_ok() {
-                                                    let _ = fs::remove_file(&part_path);
-                                                }
-                                            }
-                                            // Clean up associated .met files in Temp
-                                            let _ = fs::remove_file(temp_dir_clone.join(format!("{}.met", part_file)));
-                                            let _ = fs::remove_file(temp_dir_clone.join(format!("{}.met.bak", part_file)));
-                                        }
-                                    }
-                                }
-                                println!("[amuled] Completed download (async transfer): '{}' ({} bytes) -> moved to Incoming", clean_name, size_total);
-                            });
+                            println!("[amuled] Completed download (in-memory): '{}' ({} bytes)", d.name, d.size_total);
                         }
                     }
                 }
@@ -1097,82 +775,11 @@ fn handle_client(
                 send_packet(&mut stream, 0x01, &[]);
             }
             EC_OP_GET_DLOAD_QUEUE if authenticated => {
-                let (incoming_dir, _) = get_configured_dirs();
                 let mut d_list = downloads.lock().unwrap();
 
-                if let Ok(entries) = fs::read_dir(&incoming_dir) {
-                    let disk_files: Vec<(String, PathBuf, u64)> = entries
-                        .flatten()
-                        .filter_map(|e| {
-                            let meta = e.metadata().ok()?;
-                            if meta.is_file() {
-                                Some((e.file_name().to_string_lossy().to_string(), e.path(), meta.len()))
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-
-                    // 1. Sync completed downloads with disk files (handle rename in Explorer)
-                    for d in d_list.iter_mut() {
-                        if d.status == 8 {
-                            let current_path = incoming_dir.join(&d.name);
-                            if !current_path.exists() {
-                                // Find renamed file in incoming_dir
-                                if let Some((new_name, _, _)) = disk_files.iter().find(|(name, path, _size)| {
-                                    matches_download(name, path, &d.name, d.size_total)
-                                }) {
-                                    println!("[amuled] Syncing renamed completed file: '{}' -> '{}'", d.name, new_name);
-                                    d.name = new_name.clone();
-                                }
-                            }
-                        }
-                    }
-
-                    // 2. Completed downloads are kept in the list (never dropped from queue)
-
-                    // 3. Add any new completed files from disk not yet in d_list
-                    for (fname, fpath, fsize) in &disk_files {
-                        // Skip redundant small placeholders
-                        if *fsize < 1024 {
-                            if let Some(orig) = read_placeholder_original_name(fpath) {
-                                if d_list.iter().any(|d| d.name == orig || matches_download(fname, fpath, &d.name, d.size_total)) {
-                                    let _ = fs::remove_file(fpath);
-                                    continue;
-                                }
-                            }
-                        }
-
-                        let exists_in_list = d_list.iter().any(|d| {
-                            d.name.eq_ignore_ascii_case(fname)
-                                || matches_download(fname, fpath, &d.name, d.size_total)
-                        });
-                        if !exists_in_list {
-                            let mut hash = [0u8; 16];
-                            for (i, b) in fname.bytes().enumerate() {
-                                hash[i % 16] = hash[i % 16].wrapping_add(b);
-                            }
-                            let hash_hex: String = hash.iter().map(|b| format!("{:02X}", b)).collect();
-                            d_list.push(RealDownload {
-                                part_file: String::new(),
-                                name: fname.clone(),
-                                hash,
-                                hash_hex,
-                                size_total: *fsize,
-                                size_done: *fsize,
-                                status: 8,
-                                speed: 0,
-                                priority: 1,
-                                sources_total: 0,
-                                sources_xfer: 0,
-                            });
-                        }
-                    }
-                }
-
-                // 4. Deduplicate d_list by lowercase name
+                // Deduplicate d_list strictly by hash
                 let mut seen = std::collections::HashSet::new();
-                d_list.retain(|d| seen.insert(d.name.to_lowercase()));
+                d_list.retain(|d| seen.insert(d.hash));
 
                 for d in d_list.iter_mut() {
                     if d.size_total == 0 {
@@ -1301,52 +908,6 @@ fn handle_client(
                     d_list.remove(pos);
                 }
                 save_downloads_state(&d_list);
-                send_packet(&mut stream, 0x01, &[]);
-            }
-            EC_OP_RENAME_FILE => {
-                let mut d_list = downloads.lock().unwrap();
-                let mut renamed_info = None;
-                for d in d_list.iter_mut() {
-                    if payload.windows(16).any(|w| w == d.hash) {
-                        let mut new_name = String::new();
-                        if let Some(pos) = payload.windows(2).position(|w| w == [0x06, 0x02] || w == [0x06, 0x03]) {
-                            if pos + 7 < payload.len() {
-                                let str_bytes = &payload[pos + 7..];
-                                if let Some(null_idx) = str_bytes.iter().position(|&b| b == 0) {
-                                    if let Ok(s) = std::str::from_utf8(&str_bytes[..null_idx]) {
-                                        new_name = s.to_string();
-                                    }
-                                }
-                            }
-                        }
-                        if !new_name.is_empty() {
-                            let old_name = d.name.clone();
-                            println!("[amuled] Renaming download '{}' -> '{}'", old_name, new_name);
-                            d.name = new_name.clone();
-                            renamed_info = Some((old_name, new_name));
-                        }
-                        break;
-                    }
-                }
-                save_downloads_state(&d_list);
-                drop(d_list);
-
-                if let Some((old_name, new_name)) = renamed_info {
-                    let (incoming_dir, _) = get_configured_dirs();
-                    let old_path = incoming_dir.join(&old_name);
-                    let new_path = incoming_dir.join(&new_name);
-                    if old_path.exists() {
-                        let _ = fs::rename(&old_path, &new_path);
-                    } else if let Ok(entries) = fs::read_dir(&incoming_dir) {
-                        for entry in entries.flatten() {
-                            if entry.file_name().to_string_lossy().eq_ignore_ascii_case(&old_name) {
-                                let _ = fs::rename(entry.path(), &new_path);
-                                break;
-                            }
-                        }
-                    }
-                }
-
                 send_packet(&mut stream, 0x01, &[]);
             }
             EC_OP_DOWNLOAD_SEARCH_RESULT => {

@@ -8,11 +8,11 @@ import {
   type DaemonStatus,
   type SearchResult,
   type AppConfig,
+  type Snapshot,
 } from "./lib/tauri-bridge";
 import { getLogoSvg, getLogoDataUri, type LogoState } from "./lib/logo";
 import { ThemeManager, type ColorScheme } from "./lib/theme";
 import { t, I18nManager, type LanguageSetting } from "./lib/i18n";
-import { cleanFilename, renderDiffHtml } from "./lib/filename-cleaner";
 import { showContextMenu, type ContextMenuItem } from "./lib/context-menu";
 import { listen } from "@tauri-apps/api/event";
 
@@ -417,162 +417,7 @@ function showToast(message: string, duration = 2600) {
   }, duration);
 }
 
-function showFilenameCleanModal(
-  originalFilename: string,
-  mode: "download" | "rename",
-  onConfirm: (finalCleanName: string) => Promise<void> | void
-) {
-  document.getElementById("taurimule-clean-modal")?.remove();
 
-  const initialClean = cleanFilename(originalFilename);
-  let currentCutPattern = "";
-  let currentCleanedValue = initialClean.cleaned;
-
-  const modalOverlay = document.createElement("div");
-  modalOverlay.id = "taurimule-clean-modal";
-  modalOverlay.className = "fluent-modal-overlay";
-
-  const renderModalContent = () => {
-    const res = cleanFilename(originalFilename, currentCutPattern);
-    const charsRemoved = Math.max(0, originalFilename.length - currentCleanedValue.length);
-
-    modalOverlay.innerHTML = `
-      <div class="fluent-modal-content">
-        <div class="modal-header">
-          <div style="display: flex; align-items: center; gap: 8px;">
-            <span style="font-size: 18px;">🧹</span>
-            <div>
-              <h3>${t("cleaner.title")}</h3>
-              <div style="font-size: 11px; color: var(--text-tertiary);">${t("cleaner.subtitle")}</div>
-            </div>
-          </div>
-          <button class="btn btn-secondary btn-icon" id="btn-modal-close" style="padding: 2px 8px; font-size: 14px;">✕</button>
-        </div>
-
-        <div class="modal-body">
-          <div>
-            <label style="font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 4px;">
-              ${t("cleaner.originalName")}
-            </label>
-            <div style="font-family: var(--font-mono); font-size: 12px; background: var(--bg-card-header); padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); color: var(--text-muted); word-break: break-all;">
-              ${originalFilename}
-            </div>
-          </div>
-
-          <div>
-            <label style="font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 4px;">
-              ${t("cleaner.cutPattern")}
-            </label>
-            <input 
-              type="text" 
-              id="input-cut-pattern" 
-              placeholder="${t("cleaner.cutPlaceholder")}" 
-              class="table-search-input" 
-              style="width: 100%; box-sizing: border-box;" 
-              value="${currentCutPattern}"
-            />
-          </div>
-
-          <div>
-            <label style="font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 4px;">
-              ${t("cleaner.cleanedName")}
-            </label>
-            <input 
-              type="text" 
-              id="input-cleaned-name" 
-              class="table-search-input" 
-              style="width: 100%; box-sizing: border-box; font-weight: 600; color: var(--primary);" 
-              value="${currentCleanedValue}"
-            />
-          </div>
-
-          <div>
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-              <label style="font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px;">
-                ${t("cleaner.diffPreview")}
-              </label>
-              <span style="font-size: 11px; color: ${charsRemoved > 0 ? "var(--warning)" : "var(--text-tertiary)"}; font-weight: 500;">
-                ${charsRemoved > 0 ? t("cleaner.charsRemoved", { count: charsRemoved }) : t("cleaner.noChanges")}
-              </span>
-            </div>
-            <div class="diff-preview-box">
-              ${renderDiffHtml(res.diff)}
-            </div>
-          </div>
-        </div>
-
-        <div class="modal-footer">
-          <button class="btn btn-secondary" id="btn-modal-cancel">${t("common.cancel")}</button>
-          <button class="btn btn-primary" id="btn-modal-confirm">
-            ${mode === "download" ? `⬇ ${t("cleaner.downloadClean")}` : `✏️ ${t("cleaner.applyRename")}`}
-          </button>
-        </div>
-      </div>
-    `;
-
-    const closeBtn = modalOverlay.querySelector("#btn-modal-close");
-    const cancelBtn = modalOverlay.querySelector("#btn-modal-cancel");
-    const confirmBtn = modalOverlay.querySelector("#btn-modal-confirm");
-    const cutInput = modalOverlay.querySelector("#input-cut-pattern") as HTMLInputElement | null;
-    const cleanInput = modalOverlay.querySelector("#input-cleaned-name") as HTMLInputElement | null;
-
-    closeBtn?.addEventListener("click", () => modalOverlay.remove());
-    cancelBtn?.addEventListener("click", () => modalOverlay.remove());
-
-    confirmBtn?.addEventListener("click", async () => {
-      const finalName = cleanInput?.value.trim() || currentCleanedValue;
-      modalOverlay.remove();
-      await onConfirm(finalName);
-    });
-
-    cutInput?.addEventListener("input", (e) => {
-      currentCutPattern = (e.target as HTMLInputElement).value;
-      const updated = cleanFilename(originalFilename, currentCutPattern);
-      currentCleanedValue = updated.cleaned;
-      renderModalContent();
-      const newCut = modalOverlay.querySelector("#input-cut-pattern") as HTMLInputElement | null;
-      if (newCut) {
-        newCut.focus();
-        newCut.selectionStart = newCut.selectionEnd = newCut.value.length;
-      }
-    });
-
-    cleanInput?.addEventListener("input", (e) => {
-      currentCleanedValue = (e.target as HTMLInputElement).value;
-    });
-
-    cleanInput?.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        confirmBtn?.dispatchEvent(new MouseEvent("click"));
-      }
-    });
-  };
-
-  renderModalContent();
-  document.body.appendChild(modalOverlay);
-
-  const handleKeydown = (e: KeyboardEvent) => {
-    if (e.key === "Escape") {
-      modalOverlay.remove();
-      window.removeEventListener("keydown", handleKeydown);
-    }
-  };
-  window.addEventListener("keydown", handleKeydown);
-
-  modalOverlay.addEventListener("click", (e) => {
-    if (e.target === modalOverlay) {
-      modalOverlay.remove();
-      window.removeEventListener("keydown", handleKeydown);
-    }
-  });
-
-  setTimeout(() => {
-    const cleanInput = modalOverlay.querySelector("#input-cleaned-name") as HTMLInputElement | null;
-    cleanInput?.focus();
-    cleanInput?.select();
-  }, 60);
-}
 
 // ═══════════════════════════════════════════════════════════════════
 // Add eD2k Link Modal (Parser + Clean Download + Direct Download)
@@ -660,8 +505,6 @@ function showAddEd2kModal(initialText = "") {
   document.getElementById("taurimule-ed2k-modal")?.remove();
 
   let currentLinkText = initialText.trim();
-  let currentCutPattern = "";
-  let manualCleanNames: { [index: number]: string } = {};
 
   const modalOverlay = document.createElement("div");
   modalOverlay.id = "taurimule-ed2k-modal";
@@ -676,11 +519,6 @@ function showAddEd2kModal(initialText = "") {
 
     if (parsedList.length === 1) {
       const parsed = parsedList[0];
-      const cleanRes = cleanFilename(parsed.name, currentCutPattern);
-      const cleanProposal = manualCleanNames[0] !== undefined ? manualCleanNames[0] : cleanRes.cleaned;
-      const charsRemoved = Math.max(0, parsed.name.length - cleanProposal.length);
-      const diffPreviewHtml = renderDiffHtml(cleanRes.diff);
-
       bodyContentHtml = `
         <div style="background: var(--bg-card-header); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 14px; display: flex; flex-direction: column; gap: 10px;">
           <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -693,47 +531,6 @@ function showAddEd2kModal(initialText = "") {
 
           <div style="font-family: var(--font-mono); font-size: 11.5px; color: var(--text-secondary); background: var(--bg-input); padding: 6px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); word-break: break-all;">
             ${parsed.name}
-          </div>
-
-          <div>
-            <label style="font-size: 10.5px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 4px;">
-              ${t("cleaner.cutPattern")}
-            </label>
-            <input 
-              type="text" 
-              id="input-ed2k-cut" 
-              placeholder="${t("cleaner.cutPlaceholder")}" 
-              class="table-search-input" 
-              style="width: 100%; box-sizing: border-box; font-size: 12px;" 
-              value="${currentCutPattern}"
-            />
-          </div>
-
-          <div>
-            <label style="font-size: 10.5px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 4px;">
-              ${t("downloads.cleanProposedName")}
-            </label>
-            <input 
-              type="text" 
-              id="input-ed2k-clean-0" 
-              class="table-search-input" 
-              style="width: 100%; box-sizing: border-box; font-weight: 600; color: var(--primary); font-size: 12.5px;" 
-              value="${cleanProposal}"
-            />
-          </div>
-
-          <div>
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-              <label style="font-size: 10.5px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px;">
-                ${t("cleaner.diffPreview")}
-              </label>
-              <span style="font-size: 11px; color: ${charsRemoved > 0 ? "var(--warning)" : "var(--text-tertiary)"}; font-weight: 500;">
-                ${charsRemoved > 0 ? t("cleaner.charsRemoved", { count: charsRemoved }) : t("cleaner.noChanges")}
-              </span>
-            </div>
-            <div class="diff-preview-box" style="font-size: 11px; padding: 8px 10px;">
-              ${diffPreviewHtml}
-            </div>
           </div>
 
           <div style="font-size: 10.5px; font-family: var(--font-mono); color: var(--text-tertiary);">
@@ -755,43 +552,16 @@ function showAddEd2kModal(initialText = "") {
             </span>
           </div>
 
-          <div>
-            <label style="font-size: 10.5px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 4px;">
-              ${t("cleaner.cutPattern")} (aplica a todos los archivos del lote)
-            </label>
-            <input 
-              type="text" 
-              id="input-ed2k-cut" 
-              placeholder="${t("cleaner.cutPlaceholder")}" 
-              class="table-search-input" 
-              style="width: 100%; box-sizing: border-box; font-size: 12px;" 
-              value="${currentCutPattern}"
-            />
-          </div>
-
           <div style="max-height: 270px; overflow-y: auto; padding-right: 4px; display: flex; flex-direction: column; gap: 8px;">
             ${parsedList
-              .map((item, idx) => {
-                const cleanRes = cleanFilename(item.name, currentCutPattern);
-                const val = manualCleanNames[idx] !== undefined ? manualCleanNames[idx] : cleanRes.cleaned;
-                return `
-                  <div style="background: var(--bg-input); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 8px 10px; display: flex; flex-direction: column; gap: 4px;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
-                      <div style="display: flex; align-items: center; gap: 6px; overflow: hidden;">
-                        <span class="metric-badge badge-secondary" style="font-family: var(--font-mono); font-size: 10px; padding: 1px 5px;">#${idx + 1}</span>
-                        <span style="font-family: var(--font-mono); font-size: 10.5px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${item.name}">${item.name}</span>
-                      </div>
-                      <span style="font-family: var(--font-mono); font-size: 10.5px; color: var(--text-secondary); flex-shrink: 0;">${formatSize(item.size)}</span>
-                    </div>
-                    <input 
-                      type="text" 
-                      class="table-search-input batch-clean-input" 
-                      data-index="${idx}" 
-                      value="${val}" 
-                      style="width: 100%; box-sizing: border-box; font-size: 11.5px; font-weight: 500; color: var(--primary);" 
-                    />
-                  </div>`;
-              })
+              .map((item, idx) => `
+                <div style="background: var(--bg-input); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 8px 10px; display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+                  <div style="display: flex; align-items: center; gap: 6px; overflow: hidden;">
+                    <span class="metric-badge badge-secondary" style="font-family: var(--font-mono); font-size: 10px; padding: 1px 5px;">#${idx + 1}</span>
+                    <span style="font-family: var(--font-mono); font-size: 11px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${item.name}">${item.name}</span>
+                  </div>
+                  <span style="font-family: var(--font-mono); font-size: 10.5px; color: var(--text-secondary); flex-shrink: 0;">${formatSize(item.size)}</span>
+                </div>`)
               .join("")}
           </div>
         </div>`;
@@ -842,11 +612,8 @@ function showAddEd2kModal(initialText = "") {
           ${
             parsedList.length > 0
               ? `
-              <button class="btn btn-secondary" id="btn-ed2k-download-orig">
-                ⬇ ${isBatch ? t("downloads.originalDownloadAll", { count: parsedList.length }) : t("downloads.originalDownloadBtn")}
-              </button>
-              <button class="btn btn-primary" id="btn-ed2k-download-clean">
-                🧹 ${isBatch ? t("downloads.cleanDownloadAll", { count: parsedList.length }) : t("downloads.cleanDownloadBtn")}
+              <button class="btn btn-primary" id="btn-ed2k-download">
+                ⬇ ${isBatch ? t("downloads.batchAdding", { count: parsedList.length }) : t("downloads.addEd2kLink")}
               </button>
               `
               : ""
@@ -860,9 +627,7 @@ function showAddEd2kModal(initialText = "") {
     const cancelBtn = modalOverlay.querySelector("#btn-ed2k-cancel");
     const pasteBtn = modalOverlay.querySelector("#btn-ed2k-paste-clipboard");
     const textarea = modalOverlay.querySelector("#input-ed2k-textarea") as HTMLTextAreaElement | null;
-    const cutInput = modalOverlay.querySelector("#input-ed2k-cut") as HTMLInputElement | null;
-    const downloadOrigBtn = modalOverlay.querySelector("#btn-ed2k-download-orig");
-    const downloadCleanBtn = modalOverlay.querySelector("#btn-ed2k-download-clean");
+    const downloadBtn = modalOverlay.querySelector("#btn-ed2k-download");
 
     closeBtn?.addEventListener("click", () => modalOverlay.remove());
     cancelBtn?.addEventListener("click", () => modalOverlay.remove());
@@ -872,7 +637,6 @@ function showAddEd2kModal(initialText = "") {
         const text = await navigator.clipboard.readText();
         if (text) {
           currentLinkText = text.trim();
-          manualCleanNames = {};
           renderModalContent();
         }
       } catch (err) {
@@ -882,7 +646,6 @@ function showAddEd2kModal(initialText = "") {
 
     textarea?.addEventListener("input", (e) => {
       currentLinkText = (e.target as HTMLTextAreaElement).value;
-      manualCleanNames = {};
       renderModalContent();
       const newTextarea = modalOverlay.querySelector("#input-ed2k-textarea") as HTMLTextAreaElement | null;
       if (newTextarea) {
@@ -891,50 +654,18 @@ function showAddEd2kModal(initialText = "") {
       }
     });
 
-    cutInput?.addEventListener("input", (e) => {
-      currentCutPattern = (e.target as HTMLInputElement).value;
-      manualCleanNames = {};
-      renderModalContent();
-      const newCut = modalOverlay.querySelector("#input-ed2k-cut") as HTMLInputElement | null;
-      if (newCut) {
-        newCut.focus();
-        newCut.selectionStart = newCut.selectionEnd = newCut.value.length;
-      }
-    });
-
-    // Single clean input listener
-    const singleCleanInput = modalOverlay.querySelector("#input-ed2k-clean-0") as HTMLInputElement | null;
-    singleCleanInput?.addEventListener("input", (e) => {
-      manualCleanNames[0] = (e.target as HTMLInputElement).value;
-    });
-
-    // Batch clean inputs listener
-    modalOverlay.querySelectorAll<HTMLInputElement>(".batch-clean-input").forEach((inp) => {
-      inp.addEventListener("input", (e) => {
-        const idx = parseInt((e.target as HTMLInputElement).dataset.index || "0", 10);
-        manualCleanNames[idx] = (e.target as HTMLInputElement).value;
-      });
-    });
-
-    const executeAdd = async (useCleanNames: boolean) => {
+    downloadBtn?.addEventListener("click", async () => {
       if (parsedList.length === 0) return;
       try {
         modalOverlay.remove();
         if (parsedList.length === 1) {
           const item = parsedList[0];
-          const cleanProposal = manualCleanNames[0] || cleanFilename(item.name, currentCutPattern).cleaned;
           showToast(`⬇ Añadiendo descarga eD2k...`);
-          const res = await api.addEd2kLink(item.rawLink, useCleanNames ? cleanProposal : undefined);
+          const res = await api.addEd2kLink(item.rawLink);
           showToast(`✅ ${t("downloads.linkAddedSuccess")}: ${res.name}`);
         } else {
           showToast(`⬇ ${t("downloads.batchAdding", { count: parsedList.length })}`);
-          const batchItems = parsedList.map((item, idx) => {
-            const cleanProposal = manualCleanNames[idx] || cleanFilename(item.name, currentCutPattern).cleaned;
-            return {
-              link: item.rawLink,
-              clean_name: useCleanNames ? cleanProposal : undefined,
-            };
-          });
+          const batchItems = parsedList.map((item) => ({ link: item.rawLink }));
           await api.addEd2kLinks(batchItems);
           showToast(`✅ ${t("downloads.batchAddedSuccess", { count: batchItems.length })}`);
         }
@@ -942,10 +673,7 @@ function showAddEd2kModal(initialText = "") {
       } catch (err) {
         showToast(`⚠️ Error al añadir enlaces: ${err}`);
       }
-    };
-
-    downloadOrigBtn?.addEventListener("click", () => executeAdd(false));
-    downloadCleanBtn?.addEventListener("click", () => executeAdd(true));
+    });
   };
 
   renderModalContent();
@@ -1194,9 +922,15 @@ async function renderView() {
   }
 
   switch (currentView) {
-    case "downloads":
-      content.innerHTML = await renderDownloadsView();
+    case "downloads": {
+      const container = document.getElementById("downloads-view-container");
+      if (!container) {
+        content.innerHTML = renderDownloadsViewShell();
+        attachDownloadsToolbarListeners();
+      }
+      applySnapshotToDownloadsView();
       break;
+    }
     case "servers":
       content.innerHTML = await renderServersView();
       break;
@@ -1268,30 +1002,6 @@ async function handleActionClick(e: Event) {
         await api.downloadFile(hash!);
         navigate("downloads");
         break;
-      case "clean-download": {
-        const rawName = safeDecode(target.dataset.name);
-        if (rawName && hash) {
-          showFilenameCleanModal(rawName, "download", async (cleanName) => {
-            try {
-              await api.downloadFile(hash);
-              if (cleanName && cleanName !== rawName) {
-                setTimeout(async () => {
-                  try {
-                    await api.renameFile(hash, cleanName, rawName);
-                  } catch (e) {
-                    console.warn("Could not auto-rename download:", e);
-                  }
-                }, 350);
-              }
-              showToast(`⬇ ${t("downloads.title")}: ${cleanName || rawName}`);
-              navigate("downloads");
-            } catch (err) {
-              showToast(`⚠️ ${err}`);
-            }
-          });
-        }
-        break;
-      }
       case "launch": {
         const rawName = safeDecode(target.dataset.name);
         const fileHash = target.dataset.hash || hash || "";
@@ -1309,22 +1019,6 @@ async function handleActionClick(e: Event) {
         const rawName = safeDecode(target.dataset.name);
         const fileHash = target.dataset.hash || hash || "";
         await api.showInFolder(rawName, fileHash);
-        break;
-      }
-      case "clean-rename": {
-        const rawName = safeDecode(target.dataset.name);
-        const fileHash = target.dataset.hash || hash || "";
-        if (fileHash && rawName) {
-          showFilenameCleanModal(rawName, "rename", async (cleanName) => {
-            try {
-              await api.renameFile(fileHash, cleanName, rawName);
-              showToast(`✏️ Renombrado en eMule: ${cleanName}`);
-              await renderView();
-            } catch (err) {
-              showToast(`⚠️ ${err}`);
-            }
-          });
-        }
         break;
       }
       case "request-more-sources":
@@ -1427,21 +1121,6 @@ function attachDownloadRowInteractions(el: HTMLElement) {
               await api.showInFolder(name, hash);
             },
           },
-          {
-            label: t("contextMenu.cleanName"),
-            icon: "🧹",
-            onClick: () => {
-              showFilenameCleanModal(name, "rename", async (cleanName) => {
-                try {
-                  await api.renameFile(hash, cleanName, name);
-                  showToast(`✏️ Renombrado en eMule: ${cleanName}`);
-                  await renderView();
-                } catch (err) {
-                  showToast(`⚠️ ${err}`);
-                }
-              });
-            },
-          },
           "divider",
           {
             label: t("contextMenu.copyEd2k"),
@@ -1509,21 +1188,6 @@ function attachDownloadRowInteractions(el: HTMLElement) {
               } catch (err) {
                 showToast(`⚠️ ${err}`);
               }
-            },
-          },
-          {
-            label: t("contextMenu.cleanName"),
-            icon: "🧹",
-            onClick: () => {
-              showFilenameCleanModal(name, "rename", async (cleanName) => {
-                try {
-                  await api.renameFile(hash, cleanName, name);
-                  showToast(`✏️ Renombrado en eMule: ${cleanName}`);
-                  await renderView();
-                } catch (err) {
-                  showToast(`⚠️ ${err}`);
-                }
-              });
             },
           },
           {
@@ -1612,6 +1276,69 @@ function attachDownloadRowInteractions(el: HTMLElement) {
   });
 }
 
+function renderDownloadRowActions(d: DownloadInfo): string {
+  if (d.status === "Complete") {
+    return `
+      <button class="btn btn-primary btn-icon" data-action="launch" data-name="${encodeURIComponent(d.name)}" data-hash="${d.hash}" title="${t("contextMenu.launch")}">🚀 ${t("cleaner.launchBtn")}</button>
+      <button class="btn btn-secondary btn-icon" data-action="show-in-folder" data-name="${encodeURIComponent(d.name)}" data-hash="${d.hash}" title="${t("contextMenu.showInFolder")}">📂</button>
+      <button class="btn btn-danger btn-icon" data-action="delete" data-hash="${d.hash}" title="${t("common.delete")}">🗑</button>
+    `;
+  }
+  return `
+    ${
+      d.status === "Paused"
+        ? `<button class="btn btn-secondary btn-icon" data-action="resume" data-hash="${d.hash}" title="${t("common.resume")}">▶</button>`
+        : `<button class="btn btn-secondary btn-icon" data-action="pause" data-hash="${d.hash}" title="${t("common.pause")}">⏸</button>`
+    }
+    <button class="btn btn-secondary btn-icon" data-action="request-more-sources" data-hash="${d.hash}" title="${t("contextMenu.requestMoreSources")}">🔍</button>
+    <button class="btn btn-danger btn-icon" data-action="delete" data-hash="${d.hash}" title="${t("common.delete")}">🗑</button>
+  `;
+}
+
+function renderSingleDownloadRow(d: DownloadInfo): string {
+  return `
+    <tr 
+      class="download-row ${d.status === "Complete" ? "completed-row" : ""}" 
+      data-hash="${d.hash}" 
+      data-name="${encodeURIComponent(d.name)}" 
+      data-status="${d.status}" 
+      data-size="${d.size_total}"
+      data-priority="${d.priority}"
+      title="${d.status === "Complete" ? "Doble clic para lanzar | Clic derecho para opciones" : "Clic derecho para opciones"}"
+    >
+      <td>
+        <div class="file-title-cell">
+          <span class="file-icon">${getFileIcon(d.name)}</span>
+          <div class="file-info-stack">
+            <div class="file-name-text" title="${d.name}">${d.name}</div>
+            <div class="file-sub-meta">${t("downloads.hash")}: ${d.hash.substring(0, 12)}... | ${t("downloads.fileStatus")}: <span class="row-status-val">${d.status}</span> | ${t("contextMenu.priority")}: <strong>${d.priority}</strong></div>
+          </div>
+        </div>
+      </td>
+      <td>
+        <div style="font-weight: 500;">${formatSize(d.size_total)}</div>
+        <div class="cell-size-done" style="font-size: 11px; color: var(--text-tertiary);">${formatSize(d.size_done)}</div>
+      </td>
+      <td>
+        <div class="fluent-progress-track">
+          <div class="fluent-progress-fill ${d.status === "Complete" ? "completed" : ""}" style="width: ${(d.progress * 100).toFixed(1)}%;"></div>
+        </div>
+        <div class="fluent-progress-text">${(d.progress * 100).toFixed(1)}%</div>
+      </td>
+      <td>
+        <span class="cell-speed" style="font-family: var(--font-mono); color: ${d.speed > 0 ? "var(--primary)" : (d.status === "Complete" ? "var(--success)" : "var(--text-tertiary)")}">
+          ${d.status === "Downloading" ? formatSpeed(d.speed) : (d.status === "Complete" ? `✓ ${d.status}` : d.status)}
+        </span>
+      </td>
+      <td class="cell-sources">
+        ${d.status === "Complete" ? "100%" : `${d.sources_transferring}/${d.sources_total}`}
+      </td>
+      <td class="cell-actions" style="text-align: right; white-space: nowrap;">
+        ${renderDownloadRowActions(d)}
+      </td>
+    </tr>`;
+}
+
 function renderDownloadsTableRows(items: DownloadInfo[]): string {
   if (items.length === 0) {
     return `<tr><td colspan="6" style="text-align: center; padding: 36px 20px;">
@@ -1641,72 +1368,21 @@ function renderDownloadsTableRows(items: DownloadInfo[]): string {
      </td></tr>`;
   }
 
-  return items
-    .map(
-      (d) => `
-    <tr 
-      class="download-row ${d.status === "Complete" ? "completed-row" : ""}" 
-      data-hash="${d.hash}" 
-      data-name="${encodeURIComponent(d.name)}" 
-      data-status="${d.status}" 
-      data-size="${d.size_total}"
-      data-priority="${d.priority}"
-      title="${d.status === "Complete" ? "Doble clic para lanzar | Clic derecho para opciones" : "Clic derecho para opciones"}"
-    >
-      <td>
-        <div class="file-title-cell">
-          <span class="file-icon">${getFileIcon(d.name)}</span>
-          <div class="file-info-stack">
-            <div class="file-name-text" title="${d.name}">${d.name}</div>
-            <div class="file-sub-meta">${t("downloads.hash")}: ${d.hash.substring(0, 12)}... | ${t("downloads.fileStatus")}: ${d.status} | ${t("contextMenu.priority")}: <strong>${d.priority}</strong></div>
-          </div>
-        </div>
-      </td>
-      <td>
-        <div style="font-weight: 500;">${formatSize(d.size_total)}</div>
-        <div style="font-size: 11px; color: var(--text-tertiary);">${formatSize(d.size_done)}</div>
-      </td>
-      <td>
-        <div class="fluent-progress-track">
-          <div class="fluent-progress-fill ${d.status === "Complete" ? "completed" : ""}" style="width: ${(d.progress * 100).toFixed(1)}%;"></div>
-        </div>
-        <div class="fluent-progress-text">${(d.progress * 100).toFixed(1)}%</div>
-      </td>
-      <td>
-        <span style="font-family: var(--font-mono); color: ${d.speed > 0 ? "var(--primary)" : (d.status === "Complete" ? "var(--success)" : "var(--text-tertiary)")}">
-          ${d.status === "Downloading" ? formatSpeed(d.speed) : (d.status === "Complete" ? `✓ ${d.status}` : d.status)}
-        </span>
-      </td>
-      <td>
-        ${d.status === "Complete" ? "100%" : `${d.sources_transferring}/${d.sources_total}`}
-      </td>
-      <td style="text-align: right; white-space: nowrap;">
-        ${
-          d.status === "Complete"
-            ? `
-              <button class="btn btn-primary btn-icon" data-action="launch" data-name="${encodeURIComponent(d.name)}" data-hash="${d.hash}" title="${t("contextMenu.launch")}">🚀 ${t("cleaner.launchBtn")}</button>
-              <button class="btn btn-secondary btn-icon" data-action="show-in-folder" data-name="${encodeURIComponent(d.name)}" data-hash="${d.hash}" title="${t("contextMenu.showInFolder")}">📂</button>
-              <button class="btn btn-secondary btn-icon" data-action="clean-rename" data-name="${encodeURIComponent(d.name)}" data-hash="${d.hash}" title="${t("contextMenu.cleanName")}">🧹</button>
-              <button class="btn btn-danger btn-icon" data-action="delete" data-hash="${d.hash}" title="${t("common.delete")}">🗑</button>
-            `
-            : `
-              ${
-                d.status === "Paused"
-                  ? `<button class="btn btn-secondary btn-icon" data-action="resume" data-hash="${d.hash}" title="${t("common.resume")}">▶</button>`
-                  : `<button class="btn btn-secondary btn-icon" data-action="pause" data-hash="${d.hash}" title="${t("common.pause")}">⏸</button>`
-              }
-              <button class="btn btn-secondary btn-icon" data-action="request-more-sources" data-hash="${d.hash}" title="${t("contextMenu.requestMoreSources")}">🔍</button>
-              <button class="btn btn-secondary btn-icon" data-action="clean-rename" data-name="${encodeURIComponent(d.name)}" data-hash="${d.hash}" title="${t("contextMenu.cleanName")}">🧹</button>
-              <button class="btn btn-danger btn-icon" data-action="delete" data-hash="${d.hash}" title="${t("common.delete")}">🗑</button>
-            `
-        }
-      </td>
-    </tr>`
-    )
-    .join("");
+  return items.map(renderSingleDownloadRow).join("");
 }
 
-function applyDownloadsFilter() {
+function updateDownloadSortHeaderIcons() {
+  document.querySelectorAll("[data-sort-dl]").forEach((th) => {
+    const col = (th as HTMLElement).dataset.sortDl as DownloadSortColumn;
+    th.className = `sortable-th ${downloadSortColumn === col ? "sorted-" + downloadSortDirection : ""}`;
+    const icon = th.querySelector(".sort-icon");
+    if (icon) {
+      icon.outerHTML = renderDownloadSortIcon(col);
+    }
+  });
+}
+
+function updateDownloadsTableIncremental() {
   const tbody = document.getElementById("downloads-table-body");
   const countLabel = document.getElementById("downloads-count-label");
   if (!tbody) return;
@@ -1724,31 +1400,158 @@ function applyDownloadsFilter() {
     countLabel.textContent = t("downloads.transferringFiles", { count: sorted.length });
   }
 
-  tbody.innerHTML = renderDownloadsTableRows(sorted);
-
-  tbody.querySelectorAll("[data-action]").forEach((btn) => {
-    btn.addEventListener("click", handleActionClick);
-  });
-  tbody.querySelectorAll(".download-row").forEach((row) => {
-    attachDownloadRowInteractions(row as HTMLElement);
-  });
-  tbody.querySelector("#btn-empty-add-ed2k")?.addEventListener("click", () => openAddEd2kModalWithClipboardCheck());
-  tbody.querySelector("#btn-toggle-daemon")?.addEventListener("click", async () => {
-    try {
-      if (currentDaemonStatus?.running) {
-        await api.stopDaemon();
-      } else {
-        await api.startDaemon();
+  if (sorted.length === 0) {
+    tbody.innerHTML = renderDownloadsTableRows([]);
+    tbody.querySelector("#btn-empty-add-ed2k")?.addEventListener("click", () => openAddEd2kModalWithClipboardCheck());
+    tbody.querySelector("#btn-toggle-daemon")?.addEventListener("click", async () => {
+      try {
+        if (currentDaemonStatus?.running) await api.stopDaemon();
+        else await api.startDaemon();
+      } catch (e) {
+        console.error("Failed to toggle daemon:", e);
       }
-      setTimeout(() => renderView(), 800);
-    } catch (e) {
-      console.error("Failed to toggle daemon:", e);
+    });
+    return;
+  }
+
+  // Clear empty state if present
+  if (tbody.querySelector(".empty-state-logo-card")) {
+    tbody.innerHTML = "";
+  }
+
+  // Track existing rows by hash
+  const existingRows = new Map<string, HTMLElement>();
+  tbody.querySelectorAll<HTMLElement>("tr.download-row").forEach((row) => {
+    const h = row.dataset.hash;
+    if (h) existingRows.set(h, row);
+  });
+
+  const sortedHashes = new Set(sorted.map((d) => d.hash));
+
+  // Remove rows no longer present
+  existingRows.forEach((row, h) => {
+    if (!sortedHashes.has(h)) {
+      row.remove();
+      existingRows.delete(h);
+    }
+  });
+
+  // Update in place or append in sorted order
+  sorted.forEach((d) => {
+    let row = existingRows.get(d.hash);
+    if (row) {
+      const fill = row.querySelector(".fluent-progress-fill") as HTMLElement | null;
+      if (fill) {
+        fill.style.width = `${(d.progress * 100).toFixed(1)}%`;
+        if (d.status === "Complete") fill.classList.add("completed");
+        else fill.classList.remove("completed");
+      }
+
+      const pct = row.querySelector(".fluent-progress-text");
+      if (pct) pct.textContent = `${(d.progress * 100).toFixed(1)}%`;
+
+      const sizeDone = row.querySelector(".cell-size-done");
+      if (sizeDone) sizeDone.textContent = formatSize(d.size_done);
+
+      const speed = row.querySelector(".cell-speed") as HTMLElement | null;
+      if (speed) {
+        speed.textContent = d.status === "Downloading" ? formatSpeed(d.speed) : (d.status === "Complete" ? `✓ ${d.status}` : d.status);
+        speed.style.color = d.speed > 0 ? "var(--primary)" : (d.status === "Complete" ? "var(--success)" : "var(--text-tertiary)");
+      }
+
+      const sources = row.querySelector(".cell-sources");
+      if (sources) {
+        sources.textContent = d.status === "Complete" ? "100%" : `${d.sources_transferring}/${d.sources_total}`;
+      }
+
+      if (row.dataset.status !== d.status || row.dataset.priority !== d.priority) {
+        row.dataset.status = d.status;
+        row.dataset.priority = d.priority;
+        if (d.status === "Complete") row.classList.add("completed-row");
+        else row.classList.remove("completed-row");
+
+        const statusVal = row.querySelector(".row-status-val");
+        if (statusVal) statusVal.textContent = d.status;
+
+        const actionsCell = row.querySelector(".cell-actions");
+        if (actionsCell) {
+          actionsCell.innerHTML = renderDownloadRowActions(d);
+          actionsCell.querySelectorAll("[data-action]").forEach((btn) => btn.addEventListener("click", handleActionClick));
+        }
+      }
+
+      tbody.appendChild(row);
+    } else {
+      const tempWrapper = document.createElement("tbody");
+      tempWrapper.innerHTML = renderSingleDownloadRow(d);
+      const newRow = tempWrapper.firstElementChild as HTMLElement;
+      if (newRow) {
+        newRow.querySelectorAll("[data-action]").forEach((btn) => btn.addEventListener("click", handleActionClick));
+        attachDownloadRowInteractions(newRow);
+        tbody.appendChild(newRow);
+        existingRows.set(d.hash, newRow);
+      }
     }
   });
 }
 
-async function renderDownloadsView(): Promise<string> {
-  let stats: GlobalStats = {
+function applySnapshotToDownloadsView(snap?: Snapshot) {
+  if (snap) {
+    if (snap.downloads) cachedDownloads = snap.downloads;
+    if (snap.stats) {
+      lastStats = snap.stats;
+      updateFooter(snap.stats);
+    }
+  }
+
+  const badgeEl = document.getElementById("badge-dl-count");
+  if (badgeEl) badgeEl.textContent = cachedDownloads.length.toString();
+
+  const completedCount = cachedDownloads.filter((d) => d.status === "Complete").length;
+  const pendingCount = cachedDownloads.length - completedCount;
+
+  const stats = snap?.stats || lastStats;
+  if (stats) {
+    const speedVal = document.getElementById("dl-metric-speed-val");
+    if (speedVal) speedVal.textContent = `▼ ${formatSpeed(stats.download_speed)}`;
+
+    const ulVal = document.getElementById("dl-metric-upload-val");
+    if (ulVal) ulVal.textContent = `▲ ${formatSpeed(stats.upload_speed)}`;
+
+    const ed2kVal = document.getElementById("dl-metric-ed2k-val");
+    if (ed2kVal) ed2kVal.innerHTML = `eD2k: ${stats.ed2k_connected ? `🟢 ${t("servers.highIdActive")}` : "🔴 Off"}`;
+
+    const kadVal = document.getElementById("dl-metric-kad-val");
+    if (kadVal) kadVal.textContent = `Kad: ${stats.kad_connected ? (stats.kad_firewalled ? `🟡 ${t("servers.kadFirewalled")}` : `🟢 ${t("servers.kadOpen")}`) : "🔴 Off"}`;
+
+    const netBadge = document.getElementById("dl-metric-net-badge");
+    if (netBadge) {
+      netBadge.className = `metric-badge ${stats.ed2k_connected ? "badge-success" : "badge-warning"}`;
+      netBadge.textContent = stats.ed2k_id;
+    }
+  }
+
+  const totalBadge = document.getElementById("dl-metric-total-badge");
+  if (totalBadge) totalBadge.textContent = `${cachedDownloads.length} ${t("downloads.totalBadge")}`;
+
+  const pendingVal = document.getElementById("dl-metric-pending-val");
+  if (pendingVal) pendingVal.textContent = pendingCount.toString();
+
+  const countsSub = document.getElementById("dl-metric-counts-sub");
+  if (countsSub) {
+    countsSub.textContent = `${completedCount > 0 ? `✓ ${completedCount} ${t("downloads.completedCountLabel")} • ` : ""}${cachedDownloads.length} ${t("downloads.totalCountLabel")}`;
+  }
+
+  const hideCompletedLabel = document.querySelector(".compact-switch .fluent-switch-label");
+  if (hideCompletedLabel) {
+    hideCompletedLabel.textContent = `${t("downloads.hideCompleted")}${completedCount > 0 ? ` (${completedCount})` : ""}`;
+  }
+
+  updateDownloadsTableIncremental();
+}
+
+function renderDownloadsViewShell(): string {
+  const stats = lastStats || {
     download_speed: 0,
     upload_speed: 0,
     ed2k_connected: false,
@@ -1759,26 +1562,9 @@ async function renderDownloadsView(): Promise<string> {
     total_files: 0,
   };
 
-  try {
-    stats = await api.getStats();
-  } catch (e) {
-    console.warn("Could not fetch stats:", e);
-  }
-
-  try {
-    cachedDownloads = await api.getDownloadQueue();
-  } catch (e) {
-    cachedDownloads = [];
-  }
-
-  // Update sidebar badge
-  const badgeEl = document.getElementById("badge-dl-count");
-  if (badgeEl) badgeEl.textContent = cachedDownloads.length.toString();
-
   const completedCount = cachedDownloads.filter((d) => d.status === "Complete").length;
   const pendingCount = cachedDownloads.length - completedCount;
 
-  // Metrics Bar (Syncdrome style)
   const metricsHtml = `
     <div class="metrics-grid">
       <div class="metric-card">
@@ -1786,7 +1572,7 @@ async function renderDownloadsView(): Promise<string> {
           <span class="metric-label">${t("downloads.liveDownload")}</span>
           <span class="metric-badge badge-primary">${t("status.p2p")}</span>
         </div>
-        <div class="metric-value">▼ ${formatSpeed(stats.download_speed)}</div>
+        <div class="metric-value" id="dl-metric-speed-val">▼ ${formatSpeed(stats.download_speed)}</div>
         <div class="metric-subtext">${t("downloads.downloadSpeedSub")}</div>
       </div>
       <div class="metric-card">
@@ -1794,47 +1580,38 @@ async function renderDownloadsView(): Promise<string> {
           <span class="metric-label">${t("downloads.liveUpload")}</span>
           <span class="metric-badge badge-warning">${t("status.sharing")}</span>
         </div>
-        <div class="metric-value">▲ ${formatSpeed(stats.upload_speed)}</div>
+        <div class="metric-value" id="dl-metric-upload-val">▲ ${formatSpeed(stats.upload_speed)}</div>
         <div class="metric-subtext">${t("downloads.uploadSpeedSub")}</div>
       </div>
       <div class="metric-card">
         <div class="metric-header">
           <span class="metric-label">${t("downloads.queueFiles")}</span>
-          <span class="metric-badge badge-primary">${cachedDownloads.length} ${t("downloads.totalBadge")}</span>
+          <span class="metric-badge badge-primary" id="dl-metric-total-badge">${cachedDownloads.length} ${t("downloads.totalBadge")}</span>
         </div>
         <div class="metric-value" style="display: flex; align-items: baseline; gap: 6px;">
-          <span>${pendingCount}</span>
+          <span id="dl-metric-pending-val">${pendingCount}</span>
           <span style="font-size: 13px; font-weight: 500; color: var(--text-secondary); text-transform: lowercase;">${t("downloads.pendingLabel")}</span>
         </div>
-        <div class="metric-subtext">
+        <div class="metric-subtext" id="dl-metric-counts-sub">
           ${completedCount > 0 ? `✓ ${completedCount} ${t("downloads.completedCountLabel")} • ` : ""}${cachedDownloads.length} ${t("downloads.totalCountLabel")}
         </div>
       </div>
       <div class="metric-card">
         <div class="metric-header">
           <span class="metric-label">${t("downloads.connectedNetworks")}</span>
-          <span class="metric-badge ${stats.ed2k_connected ? "badge-success" : "badge-warning"}">${stats.ed2k_id}</span>
+          <span class="metric-badge ${stats.ed2k_connected ? "badge-success" : "badge-warning"}" id="dl-metric-net-badge">${stats.ed2k_id}</span>
         </div>
-        <div class="metric-value" style="font-size: 15px;">
+        <div class="metric-value" style="font-size: 15px;" id="dl-metric-ed2k-val">
           eD2k: ${stats.ed2k_connected ? `🟢 ${t("servers.highIdActive")}` : "🔴 Off"}
         </div>
-        <div class="metric-subtext">Kad: ${stats.kad_connected ? (stats.kad_firewalled ? `🟡 ${t("servers.kadFirewalled")}` : `🟢 ${t("servers.kadOpen")}`) : "🔴 Off"}</div>
+        <div class="metric-subtext" id="dl-metric-kad-val">Kad: ${stats.kad_connected ? (stats.kad_firewalled ? `🟡 ${t("servers.kadFirewalled")}` : `🟢 ${t("servers.kadOpen")}`) : "🔴 Off"}</div>
       </div>
     </div>`;
-
-  const filtered = cachedDownloads.filter((d) => {
-    const matchesFilter = downloadFilterQuery
-      ? d.name.toLowerCase().includes(downloadFilterQuery.toLowerCase())
-      : true;
-    const matchesCompleted = hideCompletedDownloads ? d.status !== "Complete" : true;
-    return matchesFilter && matchesCompleted;
-  });
-  const sorted = sortDownloads(filtered, downloadSortColumn, downloadSortDirection);
 
   const tableHtml = `
     <div class="table-container">
       <div class="table-toolbar downloads-toolbar">
-        <div id="downloads-count-label" class="downloads-toolbar-count">${t("downloads.transferringFiles", { count: sorted.length })}</div>
+        <div id="downloads-count-label" class="downloads-toolbar-count">${t("downloads.transferringFiles", { count: cachedDownloads.length })}</div>
         <div class="downloads-toolbar-actions">
           <label class="fluent-switch-container compact-switch" title="${t("downloads.hideCompletedDesc")}">
             <span class="fluent-switch-label">${t("downloads.hideCompleted")}${completedCount > 0 ? ` (${completedCount})` : ""}</span>
@@ -1852,9 +1629,6 @@ async function renderDownloadsView(): Promise<string> {
           </label>
           <button id="btn-open-downloads-folder" class="btn btn-secondary btn-compact" title="${t("downloads.openFolderTitle")}">
             <span>📁</span> <span>${t("downloads.openFolder")}</span>
-          </button>
-          <button id="btn-clean-all-downloads" class="btn btn-secondary btn-compact" title="${t("downloads.cleanAllTitle")}">
-            <span>🧹</span> <span>${t("downloads.cleanAll")}</span>
           </button>
           <button id="btn-refresh-downloads" class="btn btn-secondary btn-compact" title="${t("downloads.refreshTitle")}">
             <span class="refresh-icon">🔄</span> <span>${t("downloads.refresh")}</span>
@@ -1909,15 +1683,76 @@ async function renderDownloadsView(): Promise<string> {
           </tr>
         </thead>
         <tbody id="downloads-table-body">
-          ${renderDownloadsTableRows(sorted)}
         </tbody>
       </table>
     </div>`;
 
   return `
-    ${renderHeader(t("downloads.title"), t("downloads.subtitle"), t("nav.downloads"))}
-    ${metricsHtml}
-    ${tableHtml}`;
+    <div id="downloads-view-container">
+      ${renderHeader(t("downloads.title"), t("downloads.subtitle"), t("nav.downloads"))}
+      ${metricsHtml}
+      ${tableHtml}
+    </div>`;
+}
+
+function attachDownloadsToolbarListeners() {
+  document.getElementById("check-hide-completed")?.addEventListener("change", (e) => {
+    hideCompletedDownloads = (e.target as HTMLInputElement).checked;
+    localStorage.setItem("taurimule_hide_completed", hideCompletedDownloads ? "true" : "false");
+    updateDownloadsTableIncremental();
+  });
+
+  const filterInput = document.getElementById("input-filter-downloads") as HTMLInputElement | null;
+  if (filterInput) {
+    filterInput.addEventListener("input", (e) => {
+      downloadFilterQuery = (e.target as HTMLInputElement).value;
+      updateDownloadsTableIncremental();
+    });
+  }
+
+  document.getElementById("btn-open-downloads-folder")?.addEventListener("click", async () => {
+    try {
+      await api.openDownloadsFolder();
+    } catch (err) {
+      showToast(`⚠️ Error: ${err}`);
+    }
+  });
+
+  document.getElementById("btn-refresh-downloads")?.addEventListener("click", async () => {
+    const btn = document.getElementById("btn-refresh-downloads");
+    const icon = btn?.querySelector(".refresh-icon");
+    if (icon) icon.classList.add("spin");
+    try {
+      const snap = await api.getSnapshot();
+      if (snap) {
+        applySnapshotToDownloadsView(snap);
+      }
+      showToast(`🔄 ${t("downloads.refreshed")}`);
+    } catch (err) {
+      console.error("Refresh error:", err);
+    } finally {
+      if (icon) {
+        setTimeout(() => icon.classList.remove("spin"), 500);
+      }
+    }
+  });
+
+  document.getElementById("btn-add-ed2k")?.addEventListener("click", () => openAddEd2kModalWithClipboardCheck());
+
+  document.querySelectorAll("[data-sort-dl]").forEach((th) => {
+    th.addEventListener("click", (e) => {
+      const col = (e.currentTarget as HTMLElement).dataset.sortDl as DownloadSortColumn;
+      if (!col) return;
+      if (downloadSortColumn === col) {
+        downloadSortDirection = downloadSortDirection === "asc" ? "desc" : "asc";
+      } else {
+        downloadSortColumn = col;
+        downloadSortDirection = col === "name" ? "asc" : "desc";
+      }
+      updateDownloadSortHeaderIcons();
+      updateDownloadsTableIncremental();
+    });
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -2754,22 +2589,6 @@ function attachEventListeners() {
     el.addEventListener("click", () => navigate("downloads"));
   });
 
-  // Checkbox: Hide completed downloads
-  const checkHideCompleted = document.getElementById("check-hide-completed") as HTMLInputElement | null;
-  checkHideCompleted?.addEventListener("change", (e) => {
-    hideCompletedDownloads = (e.target as HTMLInputElement).checked;
-    localStorage.setItem("taurimule_hide_completed", hideCompletedDownloads ? "true" : "false");
-    applyDownloadsFilter();
-  });
-
-  // Filter downloads input
-  const filterInput = document.getElementById("input-filter-downloads") as HTMLInputElement | null;
-  if (filterInput) {
-    filterInput.addEventListener("input", (e) => {
-      downloadFilterQuery = (e.target as HTMLInputElement).value;
-      applyDownloadsFilter();
-    });
-  }
 
   // Toggle daemon (start/stop)
   document.getElementById("btn-toggle-daemon")?.addEventListener("click", async () => {
@@ -3107,79 +2926,6 @@ function attachEventListeners() {
     });
   });
 
-  // Paste / Add eD2k Link buttons
-  document.getElementById("btn-add-ed2k")?.addEventListener("click", () => openAddEd2kModalWithClipboardCheck());
-  document.getElementById("btn-empty-add-ed2k")?.addEventListener("click", () => openAddEd2kModalWithClipboardCheck());
-
-  // Open Downloads Folder
-  document.getElementById("btn-open-downloads-folder")?.addEventListener("click", async () => {
-    try {
-      await api.openDownloadsFolder();
-    } catch (err) {
-      showToast(`⚠️ Error: ${err}`);
-    }
-  });
-
-  document.getElementById("btn-clean-all-downloads")?.addEventListener("click", async () => {
-    const visible = cachedDownloads.filter((d) => {
-      const matchesFilter = downloadFilterQuery
-        ? d.name.toLowerCase().includes(downloadFilterQuery.toLowerCase())
-        : true;
-      const matchesCompleted = hideCompletedDownloads ? d.status !== "Complete" : true;
-      return matchesFilter && matchesCompleted;
-    });
-    const changes = visible
-      .map((d) => ({ d, res: cleanFilename(d.name) }))
-      .filter((x) => x.res.changed && x.res.cleaned && x.res.cleaned !== x.d.name);
-    if (changes.length === 0) {
-      showToast(`ℹ️ ${t("downloads.cleanAllNone")}`);
-      return;
-    }
-    if (!(await confirmDialog(t("downloads.cleanAllConfirm", { count: changes.length }), { title: t("downloads.cleanAll"), confirmLabel: t("downloads.cleanAll"), icon: "🧹" }))) return;
-    let ok = 0;
-    for (const { d, res } of changes) {
-      try {
-        await api.renameFile(d.hash, res.cleaned, d.name);
-        ok++;
-      } catch (err) {
-        console.error("Rename failed", d.name, err);
-      }
-    }
-    showToast(`✏️ ${t("downloads.cleanAllDone", { count: ok })}`);
-    await renderView();
-  });
-
-  // Manual Refresh in Downloads
-  document.getElementById("btn-refresh-downloads")?.addEventListener("click", async () => {
-    const btn = document.getElementById("btn-refresh-downloads");
-    const icon = btn?.querySelector(".refresh-icon");
-    if (icon) icon.classList.add("spin");
-    try {
-      await renderView();
-      showToast(`🔄 ${t("downloads.refreshed")}`);
-    } catch (err) {
-      console.error("Refresh error:", err);
-    } finally {
-      if (icon) {
-        setTimeout(() => icon.classList.remove("spin"), 500);
-      }
-    }
-  });
-
-  // Sortable column headers in Downloads
-  document.querySelectorAll("[data-sort-dl]").forEach((th) => {
-    th.addEventListener("click", (e) => {
-      const col = (e.currentTarget as HTMLElement).dataset.sortDl as DownloadSortColumn;
-      if (!col) return;
-      if (downloadSortColumn === col) {
-        downloadSortDirection = downloadSortDirection === "asc" ? "desc" : "asc";
-      } else {
-        downloadSortColumn = col;
-        downloadSortDirection = col === "name" ? "asc" : "desc";
-      }
-      renderView();
-    });
-  });
 
   // Refresh & Manage servers
   document.getElementById("btn-refresh-servers")?.addEventListener("click", () => renderView());
@@ -3397,30 +3143,6 @@ function attachEventListeners() {
             navigate("downloads");
           },
         },
-        {
-          label: `🧹 ${t("cleaner.downloadClean")}`,
-          icon: "🧹",
-          onClick: () => {
-            showFilenameCleanModal(name, "download", async (cleanName) => {
-              try {
-                await api.downloadFile(hash);
-                if (cleanName && cleanName !== name) {
-                  setTimeout(async () => {
-                    try {
-                      await api.renameFile(hash, cleanName, name);
-                    } catch (e) {
-                      console.warn("Could not auto-rename download:", e);
-                    }
-                  }, 350);
-                }
-                showToast(`⬇ ${t("downloads.title")}: ${cleanName || name}`);
-                navigate("downloads");
-              } catch (err) {
-                showToast(`⚠️ ${err}`);
-              }
-            });
-          },
-        },
         "divider",
         {
           label: t("contextMenu.copyEd2k"),
@@ -3527,8 +3249,8 @@ function startPolling() {
     if (activeEl && (activeEl.id === "input-filter-downloads" || activeEl.id === "search-query")) {
       return;
     }
-    // Never re-render whole view if on Search or Settings to prevent wiping user UI!
-    if (currentView === "search" || currentView === "settings") {
+    // Never re-render whole view if on Search, Settings, or Downloads to prevent wiping user UI!
+    if (currentView === "search" || currentView === "settings" || currentView === "downloads") {
       return;
     }
     renderView();
@@ -3580,16 +3302,6 @@ function updateFooter(stats: GlobalStats | null) {
       <div class="footer-item">Kad: ${kadStatus}</div>
     </div>`;
 }
-
-// Footer polling
-setInterval(async () => {
-  try {
-    const stats = await api.getStats();
-    updateFooter(stats);
-  } catch {
-    updateFooter(null);
-  }
-}, 2000);
 
 // ═══════════════════════════════════════════════════════════════════
 // App Shell Initialization
@@ -3756,13 +3468,20 @@ async function bootApplication() {
         clearInterval(startupTimer);
         if (statusEl) statusEl.textContent = t("splash.stepSync");
 
-        // Preload downloads before removing splash
+        // Preload snapshot before removing splash
         try {
-          cachedDownloads = await api.getDownloadQueue();
-          const badgeEl = document.getElementById("badge-dl-count");
-          if (badgeEl) badgeEl.textContent = cachedDownloads.length.toString();
+          const snap = await api.getSnapshot();
+          if (snap) {
+            cachedDownloads = snap.downloads || [];
+            if (snap.stats) {
+              lastStats = snap.stats;
+              updateFooter(snap.stats);
+            }
+            const badgeEl = document.getElementById("badge-dl-count");
+            if (badgeEl) badgeEl.textContent = cachedDownloads.length.toString();
+          }
         } catch (e) {
-          console.warn("Initial download queue load error:", e);
+          console.warn("Initial snapshot load error:", e);
         }
 
         if (statusEl) statusEl.textContent = t("splash.stepReady");
@@ -3807,6 +3526,29 @@ listen<string>("ed2k-link-received", (event) => {
   const link = event.payload;
   if (link && link.startsWith("ed2k://")) {
     showAddEd2kModal(link.trim());
+  }
+});
+
+// Real-time backend poller event listeners
+listen<Snapshot>("downloads-updated", (event) => {
+  const snap = event.payload;
+  if (!snap) return;
+  cachedDownloads = snap.downloads || [];
+  if (snap.stats) {
+    lastStats = snap.stats;
+    updateFooter(snap.stats);
+  }
+  const badgeEl = document.getElementById("badge-dl-count");
+  if (badgeEl) badgeEl.textContent = cachedDownloads.length.toString();
+
+  if (currentView === "downloads") {
+    applySnapshotToDownloadsView(snap);
+  }
+});
+
+listen<{ connected: boolean; error: string | null }>("daemon-status", (event) => {
+  if (!event.payload.connected) {
+    updateFooter(null);
   }
 });
 
