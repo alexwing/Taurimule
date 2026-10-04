@@ -1833,10 +1833,10 @@ async function renderDownloadsView(): Promise<string> {
 
   const tableHtml = `
     <div class="table-container">
-      <div class="table-toolbar">
-        <div id="downloads-count-label" style="font-weight: 600; font-size: 13px;">${t("downloads.transferringFiles", { count: sorted.length })}</div>
-        <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-          <label class="fluent-switch-container" title="${t("downloads.hideCompletedDesc")}">
+      <div class="table-toolbar downloads-toolbar">
+        <div id="downloads-count-label" class="downloads-toolbar-count">${t("downloads.transferringFiles", { count: sorted.length })}</div>
+        <div class="downloads-toolbar-actions">
+          <label class="fluent-switch-container compact-switch" title="${t("downloads.hideCompletedDesc")}">
             <span class="fluent-switch-label">${t("downloads.hideCompleted")}${completedCount > 0 ? ` (${completedCount})` : ""}</span>
             <div class="fluent-switch">
               <input 
@@ -1850,23 +1850,24 @@ async function renderDownloadsView(): Promise<string> {
               </span>
             </div>
           </label>
-          <button id="btn-open-downloads-folder" class="btn btn-secondary" style="display: flex; align-items: center; gap: 6px; font-weight: 500; padding: 6px 12px; white-space: nowrap;" title="${t("downloads.openFolderTitle")}">
+          <button id="btn-open-downloads-folder" class="btn btn-secondary btn-compact" title="${t("downloads.openFolderTitle")}">
             <span>📁</span> <span>${t("downloads.openFolder")}</span>
           </button>
-          <button id="btn-clean-all-downloads" class="btn btn-secondary" style="display: flex; align-items: center; gap: 6px; font-weight: 500; padding: 6px 12px; white-space: nowrap;" title="${t("downloads.cleanAllTitle")}">
+          <button id="btn-clean-all-downloads" class="btn btn-secondary btn-compact" title="${t("downloads.cleanAllTitle")}">
             <span>🧹</span> <span>${t("downloads.cleanAll")}</span>
           </button>
-          <button id="btn-refresh-downloads" class="btn btn-secondary" style="display: flex; align-items: center; gap: 6px; font-weight: 500; padding: 6px 12px; white-space: nowrap;" title="${t("downloads.refreshTitle")}">
+          <button id="btn-refresh-downloads" class="btn btn-secondary btn-compact" title="${t("downloads.refreshTitle")}">
             <span class="refresh-icon">🔄</span> <span>${t("downloads.refresh")}</span>
           </button>
-          <button id="btn-add-ed2k" class="btn btn-primary" style="display: flex; align-items: center; gap: 6px; font-weight: 600; padding: 6px 14px; white-space: nowrap;">
-            <span>➕</span> <span>${t("downloads.addEd2kLink")}</span>
+          <button id="btn-add-ed2k" class="btn btn-primary btn-compact" title="${t("downloads.addEd2kLinkTitle")}">
+            <span>➕</span> <span>${t("downloads.addEd2kCompact")}</span>
           </button>
           <input 
             type="text" 
             id="input-filter-downloads" 
-            placeholder="${t("downloads.filterPlaceholder")}" 
-            class="table-search-input" 
+            placeholder="${t("downloads.filterPlaceholderShort")}" 
+            title="${t("downloads.filterPlaceholder")}"
+            class="table-search-input table-search-input-compact" 
             value="${downloadFilterQuery}" 
           />
         </div>

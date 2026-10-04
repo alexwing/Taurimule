@@ -512,7 +512,10 @@ fn load_real_downloads() -> Vec<RealDownload> {
                     let segments: Vec<&str> = ed2k_part.split('|').collect();
                     if segments.len() >= 3 {
                         let name = segments[0].to_string();
-                        let size_total: u64 = segments[1].parse().unwrap_or(0);
+                        let mut size_total: u64 = segments[1].parse().unwrap_or(0);
+                        if size_total == 0 {
+                            size_total = 2_150_000_000;
+                        }
                         let hash_hex = segments[2].to_string();
                         let hash = hex_to_16_bytes(&hash_hex);
 
@@ -635,7 +638,10 @@ fn load_real_downloads() -> Vec<RealDownload> {
                     let hash = hex_to_16_bytes(&hash_hex);
                     if !list.iter().any(|d| d.hash == hash) {
                         let name = segments[0].to_string();
-                        let size_total: u64 = segments[1].parse().unwrap_or(0);
+                        let mut size_total: u64 = segments[1].parse().unwrap_or(0);
+                        if size_total == 0 {
+                            size_total = 2_150_000_000;
+                        }
                         let idx = list.len() as u32;
                         let part_file = if !raw_part.is_empty() { raw_part.to_string() } else { format!("{:03}.part", idx + 1) };
                         let is_in_incoming = file_exists_in_incoming(&name, &incoming_dir);
@@ -921,6 +927,9 @@ fn handle_client(
 
                 // Increment download progress and complete to incoming_dir when reaching 100%
                 for d in d_list.iter_mut() {
+                    if d.size_total == 0 {
+                        d.size_total = 2_150_000_000;
+                    }
                     if d.status == 1 && d.size_total > 0 {
                         let is_in_incoming = file_exists_in_incoming(&d.name, &incoming_dir);
                         if is_in_incoming {
@@ -942,38 +951,41 @@ fn handle_client(
                             d.sources_xfer = 0;
 
                             let clean_name = sanitize_filename(&url_decode(&d.name));
+                            d.name = clean_name.clone();
+
                             let incoming_path = incoming_dir.join(&clean_name);
+                            let part_file = d.part_file.clone();
+                            let size_total = d.size_total;
+                            let temp_dir_clone = temp_dir.clone();
 
-                            if !incoming_path.exists() {
-                                let part_path = if !d.part_file.is_empty() {
-                                    temp_dir.join(&d.part_file)
-                                } else {
-                                    PathBuf::new()
-                                };
+                            // Move/copy cross-volume file asynchronously in background thread
+                            // so amuled doesn't block EC socket responses and freeze the UI
+                            std::thread::spawn(move || {
+                                if !incoming_path.exists() {
+                                    let part_path = if !part_file.is_empty() {
+                                        temp_dir_clone.join(&part_file)
+                                    } else {
+                                        PathBuf::new()
+                                    };
 
-                                if !d.part_file.is_empty() && part_path.exists() {
-                                    // Move part file from Temp to Incoming (handles cross-volume move C: -> D:)
-                                    if fs::rename(&part_path, &incoming_path).is_err() {
-                                        if fs::copy(&part_path, &incoming_path).is_ok() {
-                                            let _ = fs::remove_file(&part_path);
+                                    if !part_file.is_empty() && part_path.exists() {
+                                        // Only move real .part file if it actually contains real data
+                                        let part_len = fs::metadata(&part_path).map(|m| m.len()).unwrap_or(0);
+                                        if part_len > 0 {
+                                            // Move part file from Temp to Incoming (handles cross-volume move C: -> D:)
+                                            if fs::rename(&part_path, &incoming_path).is_err() {
+                                                if fs::copy(&part_path, &incoming_path).is_ok() {
+                                                    let _ = fs::remove_file(&part_path);
+                                                }
+                                            }
+                                            // Clean up associated .met files in Temp
+                                            let _ = fs::remove_file(temp_dir_clone.join(format!("{}.met", part_file)));
+                                            let _ = fs::remove_file(temp_dir_clone.join(format!("{}.met.bak", part_file)));
                                         }
                                     }
-                                    // Ensure full target file length
-                                    if let Ok(file) = fs::OpenOptions::new().write(true).open(&incoming_path) {
-                                        let _ = file.set_len(d.size_total);
-                                    }
-                                    // Clean up associated .met files in Temp
-                                    let _ = fs::remove_file(temp_dir.join(format!("{}.met", d.part_file)));
-                                    let _ = fs::remove_file(temp_dir.join(format!("{}.met.bak", d.part_file)));
-                                } else {
-                                    // Allocate target file in incoming directory
-                                    if let Ok(file) = fs::File::create(&incoming_path) {
-                                        let _ = file.set_len(d.size_total);
-                                    }
                                 }
-                            }
-                            d.name = clean_name;
-                            println!("[amuled] Completed download: '{}' ({} bytes) -> moved to Incoming", d.name, d.size_total);
+                                println!("[amuled] Completed download (async transfer): '{}' ({} bytes) -> moved to Incoming", clean_name, size_total);
+                            });
                         }
                     }
                 }
@@ -1161,6 +1173,12 @@ fn handle_client(
                 // 4. Deduplicate d_list by lowercase name
                 let mut seen = std::collections::HashSet::new();
                 d_list.retain(|d| seen.insert(d.name.to_lowercase()));
+
+                for d in d_list.iter_mut() {
+                    if d.size_total == 0 {
+                        d.size_total = 2_150_000_000;
+                    }
+                }
 
                 let mut dload_tags = Vec::new();
                 for d in d_list.iter() {
@@ -1390,7 +1408,10 @@ fn handle_client(
                         let parts: Vec<&str> = rest.split('|').collect();
                         if parts.len() >= 3 {
                             let raw_name = parts[0].to_string();
-                            let size: u64 = parts[1].parse().unwrap_or(2_500_000_000);
+                            let mut size: u64 = parts[1].parse().unwrap_or(2_150_000_000);
+                            if size == 0 {
+                                size = 2_150_000_000;
+                            }
                             let hash_hex = parts[2].to_uppercase();
                             let hash = hex_to_16_bytes(&hash_hex);
 

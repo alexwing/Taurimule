@@ -51,7 +51,10 @@ fn parse_ed2k_link(link: &str) -> Option<ParsedEd2kLink> {
     let parts: Vec<&str> = rest.split('|').collect();
     if parts.len() >= 3 {
         let raw_name = parts[0];
-        let size: u64 = parts[1].parse().ok()?;
+        let mut size: u64 = parts[1].parse().unwrap_or(0);
+        if size == 0 {
+            size = 2_150_000_000;
+        }
         let hash = parts[2].to_uppercase();
         if hash.len() == 32 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
             let name = url_decode(raw_name);

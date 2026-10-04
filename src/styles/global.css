@@ -409,6 +409,66 @@ body {
   gap: 12px;
 }
 
+.table-toolbar.downloads-toolbar {
+  padding: 8px 14px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  gap: 10px;
+}
+
+.table-toolbar.downloads-toolbar::-webkit-scrollbar {
+  height: 3px;
+}
+
+.downloads-toolbar-count {
+  font-weight: 600;
+  font-size: 13px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.downloads-toolbar-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: nowrap;
+  flex-shrink: 0;
+}
+
+.btn-compact {
+  padding: 4px 10px !important;
+  font-size: 11.5px !important;
+  height: 28px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+  white-space: nowrap !important;
+  border-radius: var(--radius-sm) !important;
+}
+
+.table-search-input-compact {
+  height: 28px !important;
+  padding: 4px 8px !important;
+  font-size: 11.5px !important;
+  min-width: 110px !important;
+  max-width: 150px !important;
+  width: 130px !important;
+}
+
+.compact-switch {
+  padding: 3px 8px !important;
+  height: 28px !important;
+  gap: 6px !important;
+  margin-bottom: 0 !important;
+  white-space: nowrap !important;
+}
+
+.compact-switch .fluent-switch-label {
+  font-size: 11.5px !important;
+  font-weight: 500 !important;
+}
+
+
 .table-search-input {
   background-color: var(--bg-input);
   border: 1px solid var(--border-default);
