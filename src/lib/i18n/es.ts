@@ -39,7 +39,7 @@ const es: Dict = {
     settings: "Configuración",
     preferences: "Ajustes",
     minimizeToTray: "Minimizar a bandeja",
-    version: "v0.1.8",
+    version: "v0.2.0",
   },
   downloads: {
     title: "Cola de Descargas",

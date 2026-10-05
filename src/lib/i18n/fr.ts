@@ -39,7 +39,7 @@ const fr: Dict = {
     settings: "Paramètres",
     preferences: "Préférences",
     minimizeToTray: "Réduire dans la zone de notification",
-    version: "v0.1.8",
+    version: "v0.2.0",
   },
   downloads: {
     title: "File de Téléchargement",
