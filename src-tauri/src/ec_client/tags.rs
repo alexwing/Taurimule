@@ -202,17 +202,16 @@ impl EcTag {
 
     // ───────────────── Serialization ─────────────────
 
-    /// Calculate the total wire size of this tag's data + children.
+    /// Calculate the total wire size of this tag's data + children (excluding own 7-byte header and own 2-byte child count).
     fn data_len(&self) -> u32 {
         let children_size: u32 = self.children.iter().map(|c| c.wire_size()).sum();
-        let child_count_field: u32 = if !self.children.is_empty() { 2 } else { 0 };
-        child_count_field + children_size + self.data.len() as u32
+        children_size + self.data.len() as u32
     }
 
-    /// Total size on the wire (header + data + children).
+    /// Total size of this tag on the wire (header + optional child count + data + children).
     pub fn wire_size(&self) -> u32 {
-        // 2 (name) + 1 (type) + 4 (len) + data_len
-        7 + self.data_len()
+        let child_count_field: u32 = if !self.children.is_empty() { 2 } else { 0 };
+        7 + child_count_field + self.data_len()
     }
 
     /// Serialize this tag to a byte buffer.
@@ -265,7 +264,6 @@ impl EcTag {
             let child_count = cursor
                 .read_u16::<BigEndian>()
                 .map_err(|e| format!("Failed to read child count: {}", e))? as usize;
-            children_total_size += 2; // the child_count field itself
 
             for _ in 0..child_count {
                 let start_pos = cursor.position();

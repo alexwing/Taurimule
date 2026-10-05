@@ -33,10 +33,9 @@ impl EcConnection {
 
         // Step 1: Send EC_OP_AUTH_REQ
         let mut auth_req = EcPacket::new(EC_OP_AUTH_REQ);
-        auth_req.add_tag(EcTag::new_string(EC_TAG_AUTH_CLIENT_NAME, "TauriMule"));
-        auth_req.add_tag(EcTag::new_string(EC_TAG_CLIENT_VERSION, "0.1.1"));
+        auth_req.add_tag(EcTag::new_string(EC_TAG_CLIENT_NAME, "TauriMule"));
+        auth_req.add_tag(EcTag::new_string(EC_TAG_CLIENT_VERSION, "0.1.8"));
         auth_req.add_tag(EcTag::new_u16(EC_TAG_PROTOCOL_VERSION, EC_PROTOCOL_VERSION));
-        auth_req.add_tag(EcTag::new_u64(EC_TAG_CAN_ZLIB, 1));
 
         Self::send_raw(&mut stream, &auth_req, false).await?;
 
@@ -61,7 +60,12 @@ impl EcConnection {
         let salt = salt_response
             .find_tag(EC_TAG_PASSWD_SALT)
             .and_then(|t| t.as_u64())
-            .ok_or("Missing salt in AUTH_SALT response")?;
+            .ok_or_else(|| {
+                format!(
+                    "Missing salt in AUTH_SALT response. Received tags: {:?}",
+                    salt_response.tags
+                )
+            })?;
 
         log::info!("Received auth salt: 0x{:X}", salt);
 
@@ -218,26 +222,33 @@ impl EcConnection {
                     .find_child(EC_TAG_SERVER_NAME)
                     .and_then(|t| t.as_string())
                     .unwrap_or_else(|| "Unknown".to_string());
-                let ip = tag
-                    .find_child(EC_TAG_SERVER_IP)
-                    .and_then(|t| {
-                        t.as_u32().map(|v| {
-                            let bytes = v.to_be_bytes();
-                            format!("{}.{}.{}.{}", bytes[0], bytes[1], bytes[2], bytes[3])
+                let (ip, port) = if tag.data.len() >= 6 {
+                    let ip_str = format!("{}.{}.{}.{}", tag.data[0], tag.data[1], tag.data[2], tag.data[3]);
+                    let port_val = u16::from_be_bytes([tag.data[4], tag.data[5]]);
+                    (ip_str, port_val)
+                } else {
+                    let ip_str = tag
+                        .find_child(EC_TAG_SERVER_IP)
+                        .and_then(|t| {
+                            t.as_u32().map(|v| {
+                                let bytes = v.to_be_bytes();
+                                format!("{}.{}.{}.{}", bytes[0], bytes[1], bytes[2], bytes[3])
+                            })
                         })
-                    })
-                    .or_else(|| {
-                        if tag.data.len() >= 4 {
-                            Some(format!("{}.{}.{}.{}", tag.data[0], tag.data[1], tag.data[2], tag.data[3]))
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or_else(|| "0.0.0.0".to_string());
-                let port = tag
-                    .find_child(EC_TAG_SERVER_PORT)
-                    .and_then(|t| t.as_u16())
-                    .unwrap_or(0);
+                        .or_else(|| {
+                            if tag.data.len() >= 4 {
+                                Some(format!("{}.{}.{}.{}", tag.data[0], tag.data[1], tag.data[2], tag.data[3]))
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_else(|| "0.0.0.0".to_string());
+                    let port_val = tag
+                        .find_child(EC_TAG_SERVER_PORT)
+                        .and_then(|t| t.as_u16())
+                        .unwrap_or(0);
+                    (ip_str, port_val)
+                };
                 let users = tag
                     .find_child(EC_TAG_SERVER_USERS)
                     .and_then(|t| t.as_u32())
@@ -352,26 +363,28 @@ impl EcConnection {
 
         let mut results = Vec::new();
         for tag in &resp.tags {
-            if tag.name == EC_TAG_SEARCH_FILE {
+            if tag.name == EC_TAG_SEARCHFILE {
                 let hash = tag
-                    .find_child(EC_TAG_SEARCH_FILE_HASH)
+                    .find_child(EC_TAG_PARTFILE_HASH)
                     .and_then(|t| t.hash_hex())
                     .or_else(|| tag.hash_hex())
                     .unwrap_or_default();
                 let name = tag
-                    .find_child(EC_TAG_SEARCH_FILE_NAME)
+                    .find_child(EC_TAG_PARTFILE_NAME)
+                    .or_else(|| tag.find_child(EC_TAG_SEARCH_NAME))
                     .and_then(|t| t.as_string())
                     .unwrap_or_default();
                 let size = tag
-                    .find_child(EC_TAG_SEARCH_FILE_SIZE)
+                    .find_child(EC_TAG_PARTFILE_SIZE_FULL)
                     .and_then(|t| t.as_u64())
                     .unwrap_or(0);
                 let sources = tag
-                    .find_child(EC_TAG_SEARCH_FILE_SOURCE_COUNT)
+                    .find_child(EC_TAG_PARTFILE_SOURCE_COUNT)
+                    .or_else(|| tag.find_child(EC_TAG_SEARCH_AVAILABILITY))
                     .and_then(|t| t.as_u32())
                     .unwrap_or(0);
                 let complete = tag
-                    .find_child(EC_TAG_SEARCH_FILE_COMPLETE_SOURCE_COUNT)
+                    .find_child(EC_TAG_PARTFILE_SOURCE_COUNT_XFER)
                     .and_then(|t| t.as_u32())
                     .unwrap_or(0);
 
@@ -426,7 +439,11 @@ impl EcConnection {
         let mut downloads = Vec::new();
         for tag in &resp.tags {
             if tag.name == EC_TAG_PARTFILE {
-                let hash = tag.hash_hex().unwrap_or_default();
+                let hash = tag
+                    .find_child(EC_TAG_PARTFILE_HASH)
+                    .and_then(|t| t.hash_hex())
+                    .or_else(|| tag.hash_hex())
+                    .unwrap_or_default();
                 let name = tag
                     .find_child(EC_TAG_PARTFILE_NAME)
                     .and_then(|t| t.as_string())
@@ -557,15 +574,16 @@ impl EcConnection {
                     .and_then(|t| t.as_string())
                     .unwrap_or_else(|| "Unknown".to_string());
                 let speed = tag
-                    .find_child(EC_TAG_CLIENT_UPLOAD_SPEED)
+                    .find_child(EC_TAG_CLIENT_UP_SPEED)
                     .and_then(|t| t.as_u32())
                     .unwrap_or(0) as f64;
                 let transferred = tag
-                    .find_child(EC_TAG_CLIENT_TRANSFERRED_UP)
+                    .find_child(EC_TAG_CLIENT_UPLOAD_TOTAL)
                     .and_then(|t| t.as_u64())
                     .unwrap_or(0);
                 let file_name = tag
-                    .find_child(EC_TAG_CLIENT_FILE_NAME)
+                    .find_child(EC_TAG_CLIENT_UPLOAD_FILE)
+                    .or_else(|| tag.find_child(EC_TAG_CLIENT_REMOTE_FILENAME))
                     .and_then(|t| t.as_string())
                     .unwrap_or_default();
 
@@ -662,5 +680,45 @@ fn guess_file_type_from_name(name: &str) -> String {
         "Program".to_string()
     } else {
         "Other".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_ec_connect_real_amuled() {
+        match EcConnection::connect("127.0.0.1", 4712, "taurimule").await {
+            Ok(mut conn) => {
+                println!("SUCCESS: Connected to aMule! Version: {}", conn.server_version());
+                let stats = conn.get_stats().await.expect("get_stats failed");
+                println!("Stats: ed2k_connected={}, kad_connected={}", stats.ed2k_connected, stats.kad_connected);
+                let link = "ed2k://|file|Materia.oscura.2x02.Un.mundo.perfecto.(Spanish.English.Subs).WEBRip.1080p.x265-EAC3.Atmos.by.Legan.mkv|1594380978|8E26FDAFD80CB810970D3D94291FECB7|/";
+                println!("Adding ED2K link (Ep 2): {}", link);
+                conn.add_ed2k_link(link).await.expect("add_ed2k_link failed");
+
+                tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+
+                let queue = conn.get_download_queue().await.expect("get_download_queue failed");
+                println!("Downloads in queue after add: {}", queue.len());
+                for d in &queue {
+                    println!(" - {} (hash={}, {} bytes, status={}, progress={:.1}%)", d.name, d.hash, d.size_total, d.status, d.progress * 100.0);
+                }
+                assert!(!queue.is_empty(), "Queue should have at least 1 download");
+
+                let uploads = conn.get_upload_queue().await.expect("get_upload_queue failed");
+                println!("Uploads in queue: {}", uploads.len());
+
+                let servers = conn.get_server_list().await.expect("get_server_list failed");
+                println!("Servers in list: {}", servers.len());
+                for s in servers.iter().take(3) {
+                    println!(" - Server: {} ({}:{})", s.name, s.ip, s.port);
+                }
+            }
+            Err(e) => {
+                println!("Could not connect (is amuled running?): {}", e);
+            }
+        }
     }
 }

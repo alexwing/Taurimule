@@ -89,44 +89,49 @@ pub const EC_OP_CLEAR_COMPLETED: u8 = 0x53;
 // Tag Names (ec_tagname_t â€” uint16, shifted left by 1 on wire)
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-// --- Authentication Tags ---
+// --- Authentication & Protocol Negotiation Tags ---
 pub const EC_TAG_STRING: u16 = 0x0000;
 pub const EC_TAG_PASSWD_HASH: u16 = 0x0001;
 pub const EC_TAG_PROTOCOL_VERSION: u16 = 0x0002;
 pub const EC_TAG_VERSION_ID: u16 = 0x0003;
 pub const EC_TAG_DETAIL_LEVEL: u16 = 0x0004;
 pub const EC_TAG_CONNSTATE: u16 = 0x0005;
-pub const EC_TAG_AUTH_CLIENT_NAME: u16 = 0x0006;
-pub const EC_TAG_CLIENT_VERSION: u16 = 0x0007;
-pub const EC_TAG_PASSWD_SALT: u16 = 0x0008;
-pub const EC_TAG_CAN_ZLIB: u16 = 0x0009;
-pub const EC_TAG_CAN_UTF8_NUMBERS: u16 = 0x000A;
+pub const EC_TAG_ED2K_ID: u16 = 0x0006;
+pub const EC_TAG_LOG_TO_STATUS: u16 = 0x0007;
+pub const EC_TAG_BOOTSTRAP_IP: u16 = 0x0008;
+pub const EC_TAG_BOOTSTRAP_PORT: u16 = 0x0009;
+pub const EC_TAG_CLIENT_ID: u16 = 0x000A;
+pub const EC_TAG_PASSWD_SALT: u16 = 0x000B;
+pub const EC_TAG_CAN_ZLIB: u16 = 0x000C;
+pub const EC_TAG_CAN_UTF8_NUMBERS: u16 = 0x000D;
+pub const EC_TAG_CAN_NOTIFY: u16 = 0x000E;
+pub const EC_TAG_ECID: u16 = 0x000F;
+pub const EC_TAG_KAD_ID: u16 = 0x0010;
 pub const EC_TAG_CAN_LARGE_TAG_COUNT: u16 = 0x0011;
+pub const EC_TAG_CAN_PARTIAL_UPDATE: u16 = 0x0012;
+pub const EC_TAG_FILE_REMOVED: u16 = 0x0013;
+pub const EC_TAG_PREFER_NO_ZLIB: u16 = 0x0014;
+
+// --- Client Identification Tags ---
+pub const EC_TAG_AUTH_CLIENT_NAME: u16 = 0x0100;
+pub const EC_TAG_CLIENT_NAME: u16 = 0x0100;
+pub const EC_TAG_CLIENT_VERSION: u16 = 0x0101;
+pub const EC_TAG_CLIENT_MOD: u16 = 0x0102;
 
 // --- Statistics Tags ---
-pub const EC_TAG_STATS_UL_SPEED: u16 = 0x0100;
-pub const EC_TAG_STATS_DL_SPEED: u16 = 0x0101;
-pub const EC_TAG_STATS_UL_SPEED_LIMIT: u16 = 0x0102;
-pub const EC_TAG_STATS_DL_SPEED_LIMIT: u16 = 0x0103;
-pub const EC_TAG_STATS_CURR_UL_COUNT: u16 = 0x0104;
-pub const EC_TAG_STATS_CURR_DL_COUNT: u16 = 0x0105;
-pub const EC_TAG_STATS_UL_QUEUE_LEN: u16 = 0x0106;
-
-// --- Server Tags ---
-pub const EC_TAG_SERVER: u16 = 0x0200;
-pub const EC_TAG_SERVER_NAME: u16 = 0x0201;
-pub const EC_TAG_SERVER_DESC: u16 = 0x0202;
-pub const EC_TAG_SERVER_ADDRESS: u16 = 0x0203;
-pub const EC_TAG_SERVER_PING: u16 = 0x0204;
-pub const EC_TAG_SERVER_USERS: u16 = 0x0205;
-pub const EC_TAG_SERVER_USERS_MAX: u16 = 0x0206;
-pub const EC_TAG_SERVER_FILES: u16 = 0x0207;
-pub const EC_TAG_SERVER_PRIO: u16 = 0x0208;
-pub const EC_TAG_SERVER_FAILED: u16 = 0x0209;
-pub const EC_TAG_SERVER_STATIC: u16 = 0x020A;
-pub const EC_TAG_SERVER_VERSION: u16 = 0x020B;
-pub const EC_TAG_SERVER_IP: u16 = 0x020C;
-pub const EC_TAG_SERVER_PORT: u16 = 0x020D;
+pub const EC_TAG_STATS_UL_SPEED: u16 = 0x0200;
+pub const EC_TAG_STATS_DL_SPEED: u16 = 0x0201;
+pub const EC_TAG_STATS_UL_SPEED_LIMIT: u16 = 0x0202;
+pub const EC_TAG_STATS_DL_SPEED_LIMIT: u16 = 0x0203;
+pub const EC_TAG_STATS_UP_OVERHEAD: u16 = 0x0204;
+pub const EC_TAG_STATS_DOWN_OVERHEAD: u16 = 0x0205;
+pub const EC_TAG_STATS_TOTAL_SRC_COUNT: u16 = 0x0206;
+pub const EC_TAG_STATS_BANNED_COUNT: u16 = 0x0207;
+pub const EC_TAG_STATS_UL_QUEUE_LEN: u16 = 0x0208;
+pub const EC_TAG_STATS_ED2K_USERS: u16 = 0x0209;
+pub const EC_TAG_STATS_KAD_USERS: u16 = 0x020A;
+pub const EC_TAG_STATS_ED2K_FILES: u16 = 0x020B;
+pub const EC_TAG_STATS_KAD_FILES: u16 = 0x020C;
 
 // --- PartFile (Download) Tags ---
 pub const EC_TAG_PARTFILE: u16 = 0x0300;
@@ -134,52 +139,72 @@ pub const EC_TAG_PARTFILE_NAME: u16 = 0x0301;
 pub const EC_TAG_PARTFILE_PARTMETID: u16 = 0x0302;
 pub const EC_TAG_PARTFILE_SIZE_FULL: u16 = 0x0303;
 pub const EC_TAG_PARTFILE_SIZE_XFER: u16 = 0x0304;
-pub const EC_TAG_PARTFILE_SIZE_DONE: u16 = 0x0305;
-pub const EC_TAG_PARTFILE_SPEED: u16 = 0x0306;
-pub const EC_TAG_PARTFILE_STATUS: u16 = 0x0307;
-pub const EC_TAG_PARTFILE_PRIO: u16 = 0x0308;
-pub const EC_TAG_PARTFILE_SOURCE_COUNT: u16 = 0x0309;
-pub const EC_TAG_PARTFILE_SOURCE_COUNT_A4AF: u16 = 0x030A;
-pub const EC_TAG_PARTFILE_SOURCE_COUNT_NOT_CURRENT: u16 = 0x030B;
-pub const EC_TAG_PARTFILE_SOURCE_COUNT_XFER: u16 = 0x030C;
-pub const EC_TAG_PARTFILE_ED2K_LINK: u16 = 0x030D;
-pub const EC_TAG_PARTFILE_CAT: u16 = 0x030E;
-pub const EC_TAG_PARTFILE_LAST_RECV: u16 = 0x030F;
-pub const EC_TAG_PARTFILE_LAST_SEEN_COMP: u16 = 0x0310;
-pub const EC_TAG_PARTFILE_PART_STATUS: u16 = 0x0311;
-pub const EC_TAG_PARTFILE_GAP_STATUS: u16 = 0x0312;
-pub const EC_TAG_PARTFILE_REQ_STATUS: u16 = 0x0313;
-pub const EC_TAG_PARTFILE_SOURCE_NAMES: u16 = 0x0314;
-pub const EC_TAG_PARTFILE_COMMENTS: u16 = 0x0315;
-pub const EC_TAG_PARTFILE_STOPPED: u16 = 0x0316;
-pub const EC_TAG_PARTFILE_HASH: u16 = 0x0320;
+pub const EC_TAG_PARTFILE_SIZE_XFER_UP: u16 = 0x0305;
+pub const EC_TAG_PARTFILE_SIZE_DONE: u16 = 0x0306;
+pub const EC_TAG_PARTFILE_SPEED: u16 = 0x0307;
+pub const EC_TAG_PARTFILE_STATUS: u16 = 0x0308;
+pub const EC_TAG_PARTFILE_PRIO: u16 = 0x0309;
+pub const EC_TAG_PARTFILE_SOURCE_COUNT: u16 = 0x030A;
+pub const EC_TAG_PARTFILE_SOURCE_COUNT_A4AF: u16 = 0x030B;
+pub const EC_TAG_PARTFILE_SOURCE_COUNT_NOT_CURRENT: u16 = 0x030C;
+pub const EC_TAG_PARTFILE_SOURCE_COUNT_XFER: u16 = 0x030D;
+pub const EC_TAG_PARTFILE_ED2K_LINK: u16 = 0x030E;
+pub const EC_TAG_PARTFILE_CAT: u16 = 0x030F;
+pub const EC_TAG_PARTFILE_LAST_RECV: u16 = 0x0310;
+pub const EC_TAG_PARTFILE_LAST_SEEN_COMP: u16 = 0x0311;
+pub const EC_TAG_PARTFILE_PART_STATUS: u16 = 0x0312;
+pub const EC_TAG_PARTFILE_GAP_STATUS: u16 = 0x0313;
+pub const EC_TAG_PARTFILE_REQ_STATUS: u16 = 0x0314;
+pub const EC_TAG_PARTFILE_SOURCE_NAMES: u16 = 0x0315;
+pub const EC_TAG_PARTFILE_COMMENTS: u16 = 0x0316;
+pub const EC_TAG_PARTFILE_STOPPED: u16 = 0x0317;
+pub const EC_TAG_PARTFILE_DOWNLOAD_ACTIVE: u16 = 0x0318;
+pub const EC_TAG_PARTFILE_HASH: u16 = 0x031E;
+
+// --- Known Files ---
+pub const EC_TAG_KNOWNFILE: u16 = 0x0400;
+
+// --- Server Tags ---
+pub const EC_TAG_SERVER: u16 = 0x0500;
+pub const EC_TAG_SERVER_NAME: u16 = 0x0501;
+pub const EC_TAG_SERVER_DESC: u16 = 0x0502;
+pub const EC_TAG_SERVER_ADDRESS: u16 = 0x0503;
+pub const EC_TAG_SERVER_PING: u16 = 0x0504;
+pub const EC_TAG_SERVER_USERS: u16 = 0x0505;
+pub const EC_TAG_SERVER_USERS_MAX: u16 = 0x0506;
+pub const EC_TAG_SERVER_FILES: u16 = 0x0507;
+pub const EC_TAG_SERVER_PRIO: u16 = 0x0508;
+pub const EC_TAG_SERVER_FAILED: u16 = 0x0509;
+pub const EC_TAG_SERVER_STATIC: u16 = 0x050A;
+pub const EC_TAG_SERVER_VERSION: u16 = 0x050B;
+pub const EC_TAG_SERVER_IP: u16 = 0x050C;
+pub const EC_TAG_SERVER_PORT: u16 = 0x050D;
+
+// --- Client / Upload Queue Tags ---
+pub const EC_TAG_CLIENT: u16 = 0x0600;
+pub const EC_TAG_CLIENT_SOFTWARE: u16 = 0x0601;
+pub const EC_TAG_CLIENT_SCORE: u16 = 0x0602;
+pub const EC_TAG_CLIENT_HASH: u16 = 0x0603;
+pub const EC_TAG_CLIENT_FRIEND_SLOT: u16 = 0x0604;
+pub const EC_TAG_CLIENT_UPLOAD_SESSION: u16 = 0x0609;
+pub const EC_TAG_CLIENT_UPLOAD_TOTAL: u16 = 0x060A;
+pub const EC_TAG_CLIENT_DOWNLOAD_TOTAL: u16 = 0x060B;
+pub const EC_TAG_CLIENT_UP_SPEED: u16 = 0x060D;
+pub const EC_TAG_CLIENT_DOWN_SPEED: u16 = 0x060E;
+pub const EC_TAG_CLIENT_UPLOAD_FILE: u16 = 0x061F;
+pub const EC_TAG_CLIENT_REMOTE_FILENAME: u16 = 0x0627;
 
 // --- Search Tags ---
-pub const EC_TAG_SEARCH_TYPE: u16 = 0x0400;
-pub const EC_TAG_SEARCH_NAME: u16 = 0x0401;
-pub const EC_TAG_SEARCH_MIN_SIZE: u16 = 0x0402;
-pub const EC_TAG_SEARCH_MAX_SIZE: u16 = 0x0403;
-pub const EC_TAG_SEARCH_FILE_TYPE: u16 = 0x0404;
-pub const EC_TAG_SEARCH_EXTENSION: u16 = 0x0405;
-pub const EC_TAG_SEARCH_AVAILABILITY: u16 = 0x0406;
-
-pub const EC_TAG_SEARCH_FILE: u16 = 0x0500;
-pub const EC_TAG_SEARCH_FILE_NAME: u16 = 0x0501;
-pub const EC_TAG_SEARCH_FILE_SIZE: u16 = 0x0502;
-pub const EC_TAG_SEARCH_FILE_HASH: u16 = 0x0503;
-pub const EC_TAG_SEARCH_FILE_SOURCE_COUNT: u16 = 0x0504;
-pub const EC_TAG_SEARCH_FILE_COMPLETE_SOURCE_COUNT: u16 = 0x0505;
-
-// --- Kad Tags ---
-pub const EC_TAG_KAD_BOOTSTRAP_IP: u16 = 0x0600;
-pub const EC_TAG_KAD_BOOTSTRAP_PORT: u16 = 0x0601;
-
-// --- Upload Client Tags ---
-pub const EC_TAG_CLIENT: u16 = 0x0700;
-pub const EC_TAG_CLIENT_NAME: u16 = 0x0701;
-pub const EC_TAG_CLIENT_UPLOAD_SPEED: u16 = 0x0702;
-pub const EC_TAG_CLIENT_TRANSFERRED_UP: u16 = 0x0703;
-pub const EC_TAG_CLIENT_FILE_NAME: u16 = 0x0704;
+pub const EC_TAG_SEARCHFILE: u16 = 0x0700;
+pub const EC_TAG_SEARCH_TYPE: u16 = 0x0701;
+pub const EC_TAG_SEARCH_NAME: u16 = 0x0702;
+pub const EC_TAG_SEARCH_MIN_SIZE: u16 = 0x0703;
+pub const EC_TAG_SEARCH_MAX_SIZE: u16 = 0x0704;
+pub const EC_TAG_SEARCH_FILE_TYPE: u16 = 0x0705;
+pub const EC_TAG_SEARCH_EXTENSION: u16 = 0x0706;
+pub const EC_TAG_SEARCH_AVAILABILITY: u16 = 0x0707;
+pub const EC_TAG_SEARCH_STATUS: u16 = 0x0708;
+pub const EC_TAG_SEARCH_PARENT: u16 = 0x0709;
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // Tag Data Types (ec_tagtype_t â€” uint8)

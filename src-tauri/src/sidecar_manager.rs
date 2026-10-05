@@ -14,6 +14,62 @@ use crate::AppState;
 const EC_PORT: u16 = 4712;
 const EC_PASSWORD: &str = "taurimule";
 
+/// Ensure amule.conf is present and correctly configured for amuled EC connections.
+fn ensure_amule_config() {
+    let config_dir = crate::commands::config::get_amule_config_dir();
+    let conf_path = config_dir.join("amule.conf");
+    if !conf_path.exists() {
+        let _ = crate::commands::config::get_config();
+        return;
+    }
+    if let Ok(content) = std::fs::read_to_string(&conf_path) {
+        let mut modified = false;
+        let mut new_lines = Vec::new();
+        let mut has_ec_section = false;
+
+        for line in content.lines() {
+            if line.trim() == "[ExternalConnect]" {
+                has_ec_section = true;
+            }
+            if line.starts_with("IncomingDir=") {
+                let val = &line["IncomingDir=".len()..];
+                let normalized = val.trim().replace('\\', "/").trim_end_matches('/').to_string();
+                let new_line = format!("IncomingDir={}", normalized);
+                if line != new_line { modified = true; }
+                new_lines.push(new_line);
+            } else if line.starts_with("TempDir=") {
+                let val = &line["TempDir=".len()..];
+                let normalized = val.trim().replace('\\', "/").trim_end_matches('/').to_string();
+                let new_line = format!("TempDir={}", normalized);
+                if line != new_line { modified = true; }
+                new_lines.push(new_line);
+            } else if line.starts_with("ECPassword=") {
+                // Ensure password hash matches MD5("taurimule")
+                let new_line = "ECPassword=fbb1617ec78c584fc2d75d801fd62e2b".to_string();
+                if line != new_line { modified = true; }
+                new_lines.push(new_line);
+            } else {
+                new_lines.push(line.to_string());
+            }
+        }
+
+        if !has_ec_section {
+            new_lines.push(String::new());
+            new_lines.push("[ExternalConnect]".to_string());
+            new_lines.push("AcceptExternalConnections=1".to_string());
+            new_lines.push("ECAddress=127.0.0.1".to_string());
+            new_lines.push("ECPort=4712".to_string());
+            new_lines.push("ECPassword=fbb1617ec78c584fc2d75d801fd62e2b".to_string());
+            new_lines.push("RequireEncryption=0".to_string());
+            modified = true;
+        }
+
+        if modified {
+            let _ = std::fs::write(&conf_path, new_lines.join("\n"));
+        }
+    }
+}
+
 /// Start the amuled daemon as a sidecar process.
 pub async fn start_amuled(handle: &AppHandle) -> Result<(), String> {
     let state = handle.state::<AppState>();
@@ -36,17 +92,25 @@ pub async fn start_amuled(handle: &AppHandle) -> Result<(), String> {
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
 
-    log::info!("Starting amuled sidecar on EC port {}...", EC_PORT);
+    ensure_amule_config();
+
+    let config_dir = crate::commands::config::get_amule_config_dir();
+    let config_dir_str = config_dir.to_string_lossy().to_string();
+
+    log::info!(
+        "Starting official amuled sidecar on EC port {} with config: {}",
+        EC_PORT,
+        config_dir_str
+    );
 
     let sidecar_command = handle
         .shell()
         .sidecar("amuled")
         .map_err(|e| format!("Failed to create sidecar command: {}", e))?
         .args([
-            "--ec-port",
-            &EC_PORT.to_string(),
-            "--ec-password",
-            EC_PASSWORD,
+            "-c",
+            &config_dir_str,
+            "--log-stdout",
         ]);
 
     let (mut rx, child) = sidecar_command
@@ -99,10 +163,10 @@ pub async fn start_amuled(handle: &AppHandle) -> Result<(), String> {
     });
 
     // Poll for amuled to be ready via EC connection with low-latency retries
-    let max_attempts = 15;
+    let max_attempts = 25;
     let mut last_err = String::new();
     for attempt in 1..=max_attempts {
-        tokio::time::sleep(Duration::from_millis(if attempt == 1 { 250 } else { 350 })).await;
+        tokio::time::sleep(Duration::from_millis(if attempt == 1 { 300 } else { 400 })).await;
         match connect_ec(handle).await {
             Ok(()) => {
                 log::info!("EC connected successfully to amuled on attempt {}", attempt);

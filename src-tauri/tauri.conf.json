@@ -39,7 +39,11 @@
     ],
     "externalBin": [
       "binaries/amuled"
-    ]
+    ],
+    "resources": {
+      "binaries/*.dll": "",
+      "binaries/ca-bundle.crt": ""
+    }
   },
   "plugins": {
     "shell": {

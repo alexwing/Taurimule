@@ -5,9 +5,9 @@
 //! and exposes Tauri Commands for the frontend.
 
 /// Timeout for acquiring the shared EC connection lock.
-pub const EC_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(3000);
+pub const EC_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(5000);
 /// Timeout for a single EC request/response round-trip.
-pub const EC_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(3000);
+pub const EC_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(5000);
 
 /// Run an EC request on the shared connection with lock + request timeouts.
 /// A timed-out request drops the connection (stream may be desynchronised);
