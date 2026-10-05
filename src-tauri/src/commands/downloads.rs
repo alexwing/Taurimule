@@ -26,26 +26,53 @@ pub async fn download_file(
     crate::ec_call!(state.ec, |c| c.download_search_result(&hash))
 }
 
-struct ParsedEd2kLink {
-    name: String,
-    size: u64,
-    hash: String,
+pub struct ParsedEd2kLink {
+    pub name: String,
+    pub size: u64,
+    pub hash: String,
 }
 
-fn parse_ed2k_link(link: &str) -> Option<ParsedEd2kLink> {
-    let trimmed = link.trim();
+pub fn normalize_ed2k_link(raw: &str) -> Option<String> {
+    let trimmed = raw.trim().trim_matches('"').trim_matches('\'').trim();
+    // First, decode URL percent-encoding (e.g. %7C -> |, %C3%A9 -> é, %20 -> ' ', etc.)
+    let decoded = url_decode(trimmed);
     let prefix = "ed2k://|file|";
-    let start_idx = trimmed.find(prefix)? + prefix.len();
-    let rest = &trimmed[start_idx..];
+    let start_idx = decoded.find(prefix)? + prefix.len();
+    let rest = &decoded[start_idx..];
     let parts: Vec<&str> = rest.split('|').collect();
     if parts.len() >= 3 {
-        let raw_name = parts[0];
-        let size: u64 = parts[1].parse().unwrap_or(0);
-        let hash = parts[2].to_uppercase();
+        let name = parts[0].trim();
+        let size: u64 = parts[1].trim().parse().ok()?;
+        let hash = parts[2].trim().to_uppercase();
         if hash.len() == 32 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
-            let name = url_decode(raw_name);
-            return Some(ParsedEd2kLink { name, size, hash });
+            let extra = if parts.len() > 3 {
+                let remainder = parts[3..].join("|");
+                let clean_rem = remainder.trim_end_matches('/').trim_end_matches('|');
+                if clean_rem.is_empty() {
+                    String::new()
+                } else {
+                    format!("|{}", clean_rem)
+                }
+            } else {
+                String::new()
+            };
+            return Some(format!("ed2k://|file|{}|{}|{}{}|/", name, size, hash, extra));
         }
+    }
+    None
+}
+
+pub fn parse_ed2k_link(link: &str) -> Option<ParsedEd2kLink> {
+    let normalized = normalize_ed2k_link(link)?;
+    let prefix = "ed2k://|file|";
+    let start_idx = normalized.find(prefix)? + prefix.len();
+    let rest = &normalized[start_idx..];
+    let parts: Vec<&str> = rest.split('|').collect();
+    if parts.len() >= 3 {
+        let name = parts[0].to_string();
+        let size: u64 = parts[1].parse().ok()?;
+        let hash = parts[2].to_uppercase();
+        return Some(ParsedEd2kLink { name, size, hash });
     }
     None
 }
@@ -81,11 +108,35 @@ pub async fn add_ed2k_links(
     let mut last_err: Option<String> = None;
 
     for item in items {
-        if let Some(parsed) = parse_ed2k_link(&item.link) {
-            let link = item.link.trim().to_string();
-            match crate::ec_call!(state.ec, |c| c.add_ed2k_link(&link)) {
-                Ok(()) => results.push(pending_info(parsed)),
-                Err(e) => last_err = Some(e),
+        if let Some(normalized) = normalize_ed2k_link(&item.link) {
+            if let Some(parsed) = parse_ed2k_link(&normalized) {
+                // If already completed on disk, return as Complete info
+                if let Some(existing_file) = resolve_download_file(&parsed.name, Some(&parsed.hash), None) {
+                    if let Ok(meta) = existing_file.metadata() {
+                        if meta.len() == parsed.size {
+                            log::info!("Batch item already completed on disk: {:?}", existing_file);
+                            results.push(DownloadInfo {
+                                hash: parsed.hash,
+                                name: parsed.name,
+                                size_total: parsed.size,
+                                size_done: parsed.size,
+                                progress: 1.0,
+                                speed: 0.0,
+                                sources_total: 0,
+                                sources_transferring: 0,
+                                priority: "Normal".to_string(),
+                                status: "Complete".to_string(),
+                                eta_seconds: None,
+                            });
+                            continue;
+                        }
+                    }
+                }
+
+                match crate::ec_call!(state.ec, |c| c.add_ed2k_link(&normalized)) {
+                    Ok(()) => results.push(pending_info(parsed)),
+                    Err(e) => last_err = Some(e),
+                }
             }
         }
     }
@@ -105,22 +156,47 @@ pub async fn add_ed2k_link(
 ) -> Result<DownloadInfo, String> {
     log::info!("Adding eD2k link: {}", link);
 
-    let lines: Vec<&str> = link.lines().filter(|l| l.contains("ed2k://|file|")).collect();
+    let lines: Vec<&str> = link
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| l.contains("ed2k://"))
+        .collect();
     if lines.len() > 1 {
         let items: Vec<AddEd2kItem> = lines
             .into_iter()
-            .map(|l| AddEd2kItem { link: l.trim().to_string() })
+            .map(|l| AddEd2kItem { link: l.to_string() })
             .collect();
         let list = add_ed2k_links(state, items).await?;
         return list.into_iter().next().ok_or_else(|| "No se pudo añadir ningún enlace".to_string());
     }
 
-    let parsed = parse_ed2k_link(&link).ok_or_else(|| {
+    let normalized = normalize_ed2k_link(&link).ok_or_else(|| {
         "El enlace eD2k no tiene un formato válido. Formato esperado: ed2k://|file|nombre|tamaño|hash|/".to_string()
     })?;
+    let parsed = parse_ed2k_link(&normalized).unwrap();
 
-    let trimmed = link.trim().to_string();
-    crate::ec_call!(state.ec, |c| c.add_ed2k_link(&trimmed))?;
+    // Check if the file is ALREADY completed on disk in Incoming directory
+    if let Some(existing_file) = resolve_download_file(&parsed.name, Some(&parsed.hash), None) {
+        if let Ok(meta) = existing_file.metadata() {
+            if meta.len() == parsed.size {
+                log::info!("File already completed on disk: {:?}", existing_file);
+                return Err(format!(
+                    "ALREADY_COMPLETED|{}|{}",
+                    parsed.name,
+                    existing_file.display()
+                ));
+            }
+        }
+    }
+
+    // Check if the file is ALREADY in the active download queue
+    if let Ok(snap) = state.snapshot.lock() {
+        if snap.downloads.iter().any(|d| d.hash.eq_ignore_ascii_case(&parsed.hash)) {
+            return Err(format!("ALREADY_QUEUED|{}", parsed.name));
+        }
+    }
+
+    crate::ec_call!(state.ec, |c| c.add_ed2k_link(&normalized))?;
     Ok(pending_info(parsed))
 }
 
@@ -157,7 +233,7 @@ pub async fn request_more_sources(state: State<'_, AppState>, hash: String) -> R
 // Helper: Resolve download location on disk
 // ═══════════════════════════════════════════════════════════════════
 
-fn url_decode(s: &str) -> String {
+pub fn url_decode(s: &str) -> String {
     let mut result = Vec::new();
     let bytes = s.as_bytes();
     let mut i = 0;
@@ -501,6 +577,24 @@ ed2k://|file|Stuart.no.Consigue.Salvar.el.Universo.1x10.Spoiler..Grabado.con.pú
         assert_eq!(parsed.len(), 8);
         assert_eq!(parsed[0].hash, "E93D45E00304694BB9C0CFF7297A5DF6");
         assert_eq!(parsed[7].hash, "721FDA738E46B20B02A0B4EBE0D45EEC");
+    }
+
+    #[test]
+    fn test_parse_user_materia_oscura_link() {
+        let link = "ed2k://|file|Materia.oscura.2x05.Ama.y.sé.amado.(Spanish.English.Subs).WEBRip.1080p.x265-EAC3.Atmos.by.Legan.mkv|1491350391|C5B40A1B4A6EC5B6455B4C36B71573A1|/";
+        let parsed = parse_ed2k_link(link).expect("Should parse materia oscura link");
+        assert_eq!(parsed.name, "Materia.oscura.2x05.Ama.y.sé.amado.(Spanish.English.Subs).WEBRip.1080p.x265-EAC3.Atmos.by.Legan.mkv");
+        assert_eq!(parsed.size, 1491350391);
+        assert_eq!(parsed.hash, "C5B40A1B4A6EC5B6455B4C36B71573A1");
+    }
+
+    #[test]
+    fn test_parse_browser_encoded_ed2k_link() {
+        let link = "ed2k://%7Cfile%7CMateria.oscura.2x05.Ama.y.s%C3%A9.amado.(Spanish.English.Subs).WEBRip.1080p.x265-EAC3.Atmos.by.Legan.mkv%7C1491350391%7CC5B40A1B4A6EC5B6455B4C36B71573A1%7C/";
+        let parsed = parse_ed2k_link(link).expect("Should parse browser-encoded ed2k link");
+        assert_eq!(parsed.name, "Materia.oscura.2x05.Ama.y.sé.amado.(Spanish.English.Subs).WEBRip.1080p.x265-EAC3.Atmos.by.Legan.mkv");
+        assert_eq!(parsed.size, 1491350391);
+        assert_eq!(parsed.hash, "C5B40A1B4A6EC5B6455B4C36B71573A1");
     }
 }
 

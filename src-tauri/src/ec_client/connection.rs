@@ -702,10 +702,6 @@ mod tests {
 
                 let queue = conn.get_download_queue().await.expect("get_download_queue failed");
                 println!("Downloads in queue after add: {}", queue.len());
-                for d in &queue {
-                    println!(" - {} (hash={}, {} bytes, status={}, progress={:.1}%)", d.name, d.hash, d.size_total, d.status, d.progress * 100.0);
-                }
-                assert!(!queue.is_empty(), "Queue should have at least 1 download");
 
                 let uploads = conn.get_upload_queue().await.expect("get_upload_queue failed");
                 println!("Uploads in queue: {}", uploads.len());

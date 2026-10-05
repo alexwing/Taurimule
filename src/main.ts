@@ -432,13 +432,20 @@ interface ParsedEd2kInfo {
 
 function parseAllEd2kLinks(text: string): ParsedEd2kInfo[] {
   if (!text) return [];
-  const lines = text.split(/\r?\n/);
+  let cleanText = text;
+  try {
+    cleanText = decodeURIComponent(text);
+  } catch {}
+  const lines = cleanText.split(/\r?\n/);
   const links: ParsedEd2kInfo[] = [];
   const seenHashes = new Set<string>();
 
   for (const line of lines) {
-    const trimmed = line.trim();
+    let trimmed = line.trim();
     if (!trimmed) continue;
+    try {
+      trimmed = decodeURIComponent(trimmed);
+    } catch {}
     const match = trimmed.match(/ed2k:\/\/\|file\|([^|]+)\|(\d+)\|([a-fA-F0-9]{32})/);
     if (match) {
       const rawName = match[1];
@@ -464,12 +471,12 @@ function parseAllEd2kLinks(text: string): ParsedEd2kInfo[] {
   }
 
   // Also catch multiple links pasted on a single line
-  if (links.length <= 1 && text.includes("ed2k://|file|")) {
+  if (links.length <= 1 && cleanText.includes("ed2k://|file|")) {
     const globalRegex = /ed2k:\/\/\|file\|([^|]+)\|(\d+)\|([a-fA-F0-9]{32})[^\r\n]*?\|\//g;
     let m: RegExpExecArray | null;
     const inlineLinks: ParsedEd2kInfo[] = [];
     const inlineSeen = new Set<string>();
-    while ((m = globalRegex.exec(text)) !== null) {
+    while ((m = globalRegex.exec(cleanText)) !== null) {
       const rawName = m[1];
       const size = parseInt(m[2], 10);
       const hash = m[3].toUpperCase();
@@ -661,13 +668,32 @@ function showAddEd2kModal(initialText = "") {
         if (parsedList.length === 1) {
           const item = parsedList[0];
           showToast(`⬇ Añadiendo descarga eD2k...`);
-          const res = await api.addEd2kLink(item.rawLink);
-          showToast(`✅ ${t("downloads.linkAddedSuccess")}: ${res.name}`);
+          try {
+            const res = await api.addEd2kLink(item.rawLink);
+            showToast(`✅ ${t("downloads.linkAddedSuccess")}: ${res.name}`);
+          } catch (err: any) {
+            const errStr = err ? err.toString() : "";
+            if (errStr.includes("ALREADY_COMPLETED|")) {
+              const parts = errStr.split("|");
+              const fileName = parts[1] || "";
+              showToast(`📁 "${fileName}" ya está completado en la carpeta de descargas`, 7000);
+            } else if (errStr.includes("ALREADY_QUEUED|")) {
+              const parts = errStr.split("|");
+              const fileName = parts[1] || "";
+              showToast(`ℹ️ "${fileName}" ya está en la cola de descargas`, 5000);
+            } else {
+              showToast(`⚠️ Error al añadir enlace: ${err}`);
+            }
+          }
         } else {
           showToast(`⬇ ${t("downloads.batchAdding", { count: parsedList.length })}`);
           const batchItems = parsedList.map((item) => ({ link: item.rawLink }));
-          await api.addEd2kLinks(batchItems);
-          showToast(`✅ ${t("downloads.batchAddedSuccess", { count: batchItems.length })}`);
+          try {
+            const added = await api.addEd2kLinks(batchItems);
+            showToast(`✅ ${t("downloads.batchAddedSuccess", { count: added.length })}`);
+          } catch (err: any) {
+            showToast(`⚠️ Error en lote: ${err}`);
+          }
         }
         downloadFilterQuery = "";
         const filterInput = document.getElementById("input-filter-downloads") as HTMLInputElement | null;
@@ -709,8 +735,11 @@ function showAddEd2kModal(initialText = "") {
 async function openAddEd2kModalWithClipboardCheck() {
   let initial = "";
   try {
-    const text = await navigator.clipboard.readText();
-    if (text && text.includes("ed2k://|file|")) {
+    let text = await navigator.clipboard.readText();
+    try {
+      text = decodeURIComponent(text);
+    } catch {}
+    if (text && (text.includes("ed2k://|file|") || text.includes("ed2k://%7Cfile%7C") || text.includes("ed2k://%7cfile%7c"))) {
       initial = text.trim();
     }
   } catch {}
@@ -3644,8 +3673,11 @@ window.addEventListener("paste", (e: ClipboardEvent) => {
   if (activeEl?.id === "input-ed2k-textarea") {
     return;
   }
-  const pasted = e.clipboardData?.getData("text") || "";
-  if (pasted.includes("ed2k://|file|")) {
+  let pasted = e.clipboardData?.getData("text") || "";
+  try {
+    pasted = decodeURIComponent(pasted);
+  } catch {}
+  if (pasted.includes("ed2k://|file|") || pasted.includes("ed2k://%7Cfile%7C") || pasted.includes("ed2k://%7cfile%7c")) {
     e.preventDefault();
     showAddEd2kModal(pasted.trim());
   }
@@ -3655,7 +3687,10 @@ window.addEventListener("paste", (e: ClipboardEvent) => {
 let addLinkQueue: Promise<void> = Promise.resolve();
 
 function enqueueAddEd2kLink(rawLink: string) {
-  const link = rawLink.trim();
+  let link = rawLink.trim();
+  try {
+    link = decodeURIComponent(link);
+  } catch {}
   if (!link || !link.startsWith("ed2k://")) return;
 
   addLinkQueue = addLinkQueue.then(async () => {
@@ -3671,6 +3706,20 @@ function enqueueAddEd2kLink(rawLink: string) {
         return;
       } catch (err: any) {
         const errStr = err ? err.toString() : "";
+        if (errStr.includes("ALREADY_COMPLETED|")) {
+          const parts = errStr.split("|");
+          const fileName = parts[1] || "";
+          showToast(`📁 "${fileName}" ya está completado en la carpeta de descargas`, 7000);
+          navigate("downloads");
+          return;
+        }
+        if (errStr.includes("ALREADY_QUEUED|")) {
+          const parts = errStr.split("|");
+          const fileName = parts[1] || "";
+          showToast(`ℹ️ "${fileName}" ya está en la cola de descargas`, 5000);
+          navigate("downloads");
+          return;
+        }
         if ((errStr.includes("Not connected") || errStr.includes("EC connection busy")) && retries < 20) {
           retries++;
           await new Promise((r) => setTimeout(r, 400));
@@ -3686,7 +3735,10 @@ function enqueueAddEd2kLink(rawLink: string) {
 
 // Deep link listener: catch ed2k:// links launched from browser / protocol handler — add directly without prompting!
 listen<string>("ed2k-link-received", (event) => {
-  const link = event.payload;
+  let link = event.payload;
+  try {
+    link = decodeURIComponent(link);
+  } catch {}
   if (link && link.startsWith("ed2k://")) {
     enqueueAddEd2kLink(link);
   }

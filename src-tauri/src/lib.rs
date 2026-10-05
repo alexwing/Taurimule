@@ -190,8 +190,13 @@ pub fn run() {
             }
             for arg in &args {
                 let trimmed = arg.trim_matches('"').trim_matches('\'').trim();
-                if trimmed.starts_with("ed2k://") {
-                    let _ = app.emit("ed2k-link-received", trimmed.to_string());
+                let decoded = crate::commands::downloads::url_decode(trimmed);
+                let target_link = crate::commands::downloads::normalize_ed2k_link(&decoded)
+                    .or_else(|| crate::commands::downloads::normalize_ed2k_link(trimmed))
+                    .or_else(|| if trimmed.starts_with("ed2k://") { Some(trimmed.to_string()) } else { None });
+
+                if let Some(link) = target_link {
+                    let _ = app.emit("ed2k-link-received", link);
                 }
             }
         }))
@@ -273,11 +278,16 @@ pub fn run() {
             // Check cold start CLI args for ed2k link
             for arg in std::env::args() {
                 let trimmed = arg.trim_matches('"').trim_matches('\'').trim().to_string();
-                if trimmed.starts_with("ed2k://") {
+                let decoded = crate::commands::downloads::url_decode(&trimmed);
+                let target_link = crate::commands::downloads::normalize_ed2k_link(&decoded)
+                    .or_else(|| crate::commands::downloads::normalize_ed2k_link(&trimmed))
+                    .or_else(|| if trimmed.starts_with("ed2k://") { Some(trimmed) } else { None });
+
+                if let Some(link) = target_link {
                     let handle_clone = handle.clone();
                     tauri::async_runtime::spawn(async move {
                         tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
-                        let _ = handle_clone.emit("ed2k-link-received", trimmed);
+                        let _ = handle_clone.emit("ed2k-link-received", link);
                     });
                 }
             }
