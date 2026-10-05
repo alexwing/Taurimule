@@ -81,6 +81,37 @@ pub async fn get_kad_status(
 }
 
 #[tauri::command]
+pub async fn start_kad(
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mut ec = state.ec.lock().await;
+    let conn = ec.as_mut().ok_or("Not connected to amuled")?;
+    conn.start_kad().await
+}
+
+#[tauri::command]
+pub async fn stop_kad(
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mut ec = state.ec.lock().await;
+    let conn = ec.as_mut().ok_or("Not connected to amuled")?;
+    conn.stop_kad().await
+}
+
+#[tauri::command]
+pub async fn bootstrap_kad(
+    state: State<'_, AppState>,
+    url: Option<String>,
+) -> Result<(), String> {
+    let default_url = "http://upd.emule-security.org/nodes.dat".to_string();
+    let target_url = url.unwrap_or(default_url);
+    let mut ec = state.ec.lock().await;
+    let conn = ec.as_mut().ok_or("Not connected to amuled")?;
+    conn.bootstrap_kad_from_url(&target_url).await
+}
+
+
+#[tauri::command]
 pub async fn add_server(
     state: State<'_, AppState>,
     ip: String,

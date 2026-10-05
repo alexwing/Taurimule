@@ -115,6 +115,11 @@ export const api = {
   updateServersFromUrl: (url: string) => invoke<number>('update_servers_from_url', { url }),
   loadLocalServerMet: (filePath: string) => invoke<number>('load_local_server_met', { filePath }),
 
+  // Kad
+  startKad: () => invoke<void>('start_kad'),
+  stopKad: () => invoke<void>('stop_kad'),
+  bootstrapKad: (url?: string) => invoke<void>('bootstrap_kad', { url }),
+
   // Search
   startSearch: (params: SearchParams) => invoke<void>('start_search', { params }),
   getSearchResults: () => invoke<SearchResult[]>('get_search_results'),

@@ -1682,15 +1682,20 @@ function applySnapshotToDownloadsView(snap?: Snapshot) {
     if (ulVal) ulVal.textContent = `▲ ${formatSpeed(stats.upload_speed)}`;
 
     const ed2kVal = document.getElementById("dl-metric-ed2k-val");
-    if (ed2kVal) ed2kVal.innerHTML = `eD2k: ${stats.ed2k_connected ? `🟢 ${t("servers.highIdActive")}` : "🔴 Off"}`;
+    if (ed2kVal) {
+      const ed2kText = stats.ed2k_connected
+        ? (stats.ed2k_id === "High" ? `🟢 ${t("servers.highIdActive")}` : `🟡 ${t("servers.lowIdActive")}`)
+        : "🔴 Off";
+      ed2kVal.innerHTML = `eD2k: ${ed2kText}`;
+    }
 
     const kadVal = document.getElementById("dl-metric-kad-val");
     if (kadVal) kadVal.textContent = `Kad: ${stats.kad_connected ? (stats.kad_firewalled ? `🟡 ${t("servers.kadFirewalled")}` : `🟢 ${t("servers.kadOpen")}`) : "🔴 Off"}`;
 
     const netBadge = document.getElementById("dl-metric-net-badge");
     if (netBadge) {
-      netBadge.className = `metric-badge ${stats.ed2k_connected ? "badge-success" : "badge-warning"}`;
-      netBadge.textContent = stats.ed2k_id;
+      netBadge.className = `metric-badge ${stats.ed2k_connected ? (stats.ed2k_id === "High" ? "badge-success" : "badge-warning") : "badge-warning"}`;
+      netBadge.textContent = stats.ed2k_id === "High" ? "High ID" : stats.ed2k_id === "Low" ? "Low ID" : stats.ed2k_id;
     }
   }
 
@@ -1762,10 +1767,10 @@ function renderDownloadsViewShell(): string {
       <div class="metric-card">
         <div class="metric-header">
           <span class="metric-label">${t("downloads.connectedNetworks")}</span>
-          <span class="metric-badge ${stats.ed2k_connected ? "badge-success" : "badge-warning"}" id="dl-metric-net-badge">${stats.ed2k_id}</span>
+          <span class="metric-badge ${stats.ed2k_connected ? (stats.ed2k_id === "High" ? "badge-success" : "badge-warning") : "badge-warning"}" id="dl-metric-net-badge">${stats.ed2k_id === "High" ? "High ID" : stats.ed2k_id === "Low" ? "Low ID" : stats.ed2k_id}</span>
         </div>
         <div class="metric-value" style="font-size: 15px;" id="dl-metric-ed2k-val">
-          eD2k: ${stats.ed2k_connected ? `🟢 ${t("servers.highIdActive")}` : "🔴 Off"}
+          eD2k: ${stats.ed2k_connected ? (stats.ed2k_id === "High" ? `🟢 ${t("servers.highIdActive")}` : `🟡 ${t("servers.lowIdActive")}`) : "🔴 Off"}
         </div>
         <div class="metric-subtext" id="dl-metric-kad-val">Kad: ${stats.kad_connected ? (stats.kad_firewalled ? `🟡 ${t("servers.kadFirewalled")}` : `🟢 ${t("servers.kadOpen")}`) : "🔴 Off"}</div>
       </div>
@@ -1944,9 +1949,9 @@ async function renderServersView(): Promise<string> {
         </div>
         <div>
           <div class="metric-label">${t("servers.identity")}</div>
-          <div class="metric-value" style="font-size: 15px;">${stats ? stats.ed2k_id : t("status.disconnectedFromDaemon")}</div>
-          <div class="metric-hint" style="color: ${stats?.ed2k_connected ? "var(--success)" : "var(--text-tertiary)"}; font-weight: 500;">
-            ${stats?.ed2k_connected ? `🟢 ${t("servers.highIdActive")}` : `🔴 ${t("servers.waitingConnection")}`}
+          <div class="metric-value" style="font-size: 15px;">${stats ? (stats.ed2k_id === "High" ? "High ID" : stats.ed2k_id === "Low" ? "Low ID" : stats.ed2k_id) : t("status.disconnectedFromDaemon")}</div>
+          <div class="metric-hint" style="color: ${stats?.ed2k_connected ? (stats.ed2k_id === "High" ? "var(--success)" : "var(--warning)") : "var(--text-tertiary)"}; font-weight: 500;">
+            ${stats?.ed2k_connected ? (stats.ed2k_id === "High" ? `🟢 ${t("servers.highIdActive")}` : `🟡 ${t("servers.lowIdActive")}`) : `🔴 ${t("servers.waitingConnection")}`}
           </div>
         </div>
       </div>
@@ -1960,7 +1965,17 @@ async function renderServersView(): Promise<string> {
         <div class="metric-value" style="font-size: 15px;">
           ${stats?.kad_connected ? (stats?.kad_firewalled ? `🟡 ${t("servers.kadFirewalled")}` : `🟢 ${t("servers.kadOpen")}`) : `🔴 ${t("servers.kadDisconnected")}`}
         </div>
-        <div class="metric-subtext">${t("servers.udpPort")}: 6591</div>
+        <div class="metric-subtext" style="display: flex; align-items: center; justify-content: space-between; margin-top: 6px;">
+          <span>${t("servers.udpPort")}: 6591</span>
+          <div style="display: flex; gap: 6px;">
+            ${stats?.kad_connected ? `
+              <button class="btn btn-secondary btn-sm" id="btn-kad-toggle" style="padding: 2px 8px; font-size: 11px;" title="${t("servers.disconnectKad")}">⏹ ${t("servers.disconnectKad")}</button>
+            ` : `
+              <button class="btn btn-primary btn-sm" id="btn-kad-toggle" style="padding: 2px 8px; font-size: 11px;" title="${t("servers.connectKad")}">▶ ${t("servers.connectKad")}</button>
+            `}
+            <button class="btn btn-secondary btn-sm" id="btn-kad-bootstrap" style="padding: 2px 8px; font-size: 11px;" title="${t("servers.bootstrapKad")}">🔄 nodes.dat</button>
+          </div>
+        </div>
       </div>
       <div class="metric-card">
         <div class="metric-header">
@@ -3086,6 +3101,32 @@ function attachEventListeners() {
   document.getElementById("btn-refresh-servers")?.addEventListener("click", () => renderView());
   document.getElementById("btn-show-add-server")?.addEventListener("click", () => showAddServerModal());
   document.getElementById("btn-show-update-servermet")?.addEventListener("click", () => showUpdateServerMetModal());
+
+  // Kad Network controls
+  document.getElementById("btn-kad-toggle")?.addEventListener("click", async () => {
+    try {
+      if (lastStats?.kad_connected) {
+        await api.stopKad();
+        showToast(t("servers.kadDisconnected"));
+      } else {
+        await api.startKad();
+        showToast(t("servers.connectKad"));
+      }
+      setTimeout(() => renderView(), 800);
+    } catch (e: any) {
+      showToast(`❌ Error: ${e?.message || e}`);
+    }
+  });
+
+  document.getElementById("btn-kad-bootstrap")?.addEventListener("click", async () => {
+    try {
+      await api.bootstrapKad();
+      showToast(`🔄 ${t("servers.bootstrapKadSuccess")}`);
+      setTimeout(() => renderView(), 1500);
+    } catch (e: any) {
+      showToast(`❌ Error: ${e?.message || e}`);
+    }
+  });
 
   // Search tab selection
   document.querySelectorAll(".search-tab").forEach((tabEl) => {

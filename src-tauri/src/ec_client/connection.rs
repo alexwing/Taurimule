@@ -193,18 +193,59 @@ impl EcConnection {
         }
 
         // Connection state is embedded in EC_TAG_CONNSTATE
+        // aMule CEC_ConnState_Tag bit layout (src/ECSpecialCoreTags.cpp):
+        //   0x01: IsConnectedED2K()
+        //   0x02: serverconnect->IsConnecting()
+        //   0x04: IsConnectedKad()
+        //   0x08: Kademlia::IsFirewalled()
+        //   0x10: Kademlia::IsRunning()
         if let Some(conn_tag) = resp.find_tag(EC_TAG_CONNSTATE) {
             let state = conn_tag.as_u8().unwrap_or(0);
-            // Bit 0: eD2k connected, Bit 1: Kad connected, Bit 4: Kad firewalled
             stats.ed2k_connected = (state & 0x01) != 0;
-            stats.kad_connected = (state & 0x02) != 0;
-            stats.kad_firewalled = (state & 0x10) != 0;
-            stats.ed2k_id = if stats.ed2k_connected {
-                if (state & 0x04) != 0 { "Low".to_string() } else { "High".to_string() }
+            let ed2k_connecting = (state & 0x02) != 0;
+            stats.kad_connected = (state & 0x04) != 0;
+            stats.kad_firewalled = (state & 0x08) != 0;
+
+            if stats.ed2k_connected {
+                // If connected, check child EC_TAG_ED2K_ID (0x0006)
+                if let Some(id_tag) = conn_tag.children.iter().find(|t| t.name == EC_TAG_ED2K_ID) {
+                    let id_val = id_tag.as_u32().unwrap_or(0);
+                    // Standard eD2k rule: ID >= 16777216 is High ID, ID < 16777216 is Low ID
+                    if id_val >= 16_777_216 {
+                        stats.ed2k_id = "High".to_string();
+                    } else {
+                        stats.ed2k_id = "Low".to_string();
+                    }
+                } else {
+                    stats.ed2k_id = "High".to_string();
+                }
+            } else if ed2k_connecting {
+                stats.ed2k_id = "Connecting".to_string();
             } else {
-                "Disconnected".to_string()
-            };
+                stats.ed2k_id = "Disconnected".to_string();
+            }
         }
+
+        let mut ed2k_users = 0u32;
+        let mut kad_users = 0u32;
+        let mut ed2k_files = 0u32;
+        let mut kad_files = 0u32;
+
+        if let Some(t) = resp.find_tag(EC_TAG_STATS_ED2K_USERS) {
+            ed2k_users = t.as_u32().unwrap_or(0);
+        }
+        if let Some(t) = resp.find_tag(EC_TAG_STATS_KAD_USERS) {
+            kad_users = t.as_u32().unwrap_or(0);
+        }
+        if let Some(t) = resp.find_tag(EC_TAG_STATS_ED2K_FILES) {
+            ed2k_files = t.as_u32().unwrap_or(0);
+        }
+        if let Some(t) = resp.find_tag(EC_TAG_STATS_KAD_FILES) {
+            kad_files = t.as_u32().unwrap_or(0);
+        }
+
+        stats.total_users = ed2k_users + kad_users;
+        stats.total_files = ed2k_files + kad_files;
 
         Ok(stats)
     }
@@ -329,6 +370,28 @@ impl EcConnection {
     /// Update server.met list from URL.
     pub async fn update_servers_from_url(&mut self, url: &str) -> Result<(), String> {
         let mut pkt = EcPacket::new(EC_OP_SERVER_UPDATE_FROM_URL);
+        pkt.add_tag(EcTag::new_string(EC_TAG_STRING, url));
+        self.request(&pkt).await?;
+        Ok(())
+    }
+
+    /// Start Kademlia network.
+    pub async fn start_kad(&mut self) -> Result<(), String> {
+        let pkt = EcPacket::new(EC_OP_KAD_START);
+        self.request(&pkt).await?;
+        Ok(())
+    }
+
+    /// Stop Kademlia network.
+    pub async fn stop_kad(&mut self) -> Result<(), String> {
+        let pkt = EcPacket::new(EC_OP_KAD_STOP);
+        self.request(&pkt).await?;
+        Ok(())
+    }
+
+    /// Update / Bootstrap Kademlia contacts (nodes.dat) from URL.
+    pub async fn bootstrap_kad_from_url(&mut self, url: &str) -> Result<(), String> {
+        let mut pkt = EcPacket::new(EC_OP_KAD_UPDATE_FROM_URL);
         pkt.add_tag(EcTag::new_string(EC_TAG_STRING, url));
         self.request(&pkt).await?;
         Ok(())
@@ -688,33 +751,20 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_ec_connect_real_amuled() {
+    async fn test_inspect_kad_tags() {
         match EcConnection::connect("127.0.0.1", 4712, "taurimule").await {
             Ok(mut conn) => {
-                println!("SUCCESS: Connected to aMule! Version: {}", conn.server_version());
                 let stats = conn.get_stats().await.expect("get_stats failed");
-                println!("Stats: ed2k_connected={}, kad_connected={}", stats.ed2k_connected, stats.kad_connected);
-                let link = "ed2k://|file|Materia.oscura.2x02.Un.mundo.perfecto.(Spanish.English.Subs).WEBRip.1080p.x265-EAC3.Atmos.by.Legan.mkv|1594380978|8E26FDAFD80CB810970D3D94291FECB7|/";
-                println!("Adding ED2K link (Ep 2): {}", link);
-                conn.add_ed2k_link(link).await.expect("add_ed2k_link failed");
-
-                tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-
-                let queue = conn.get_download_queue().await.expect("get_download_queue failed");
-                println!("Downloads in queue after add: {}", queue.len());
-
-                let uploads = conn.get_upload_queue().await.expect("get_upload_queue failed");
-                println!("Uploads in queue: {}", uploads.len());
-
-                let servers = conn.get_server_list().await.expect("get_server_list failed");
-                println!("Servers in list: {}", servers.len());
-                for s in servers.iter().take(3) {
-                    println!(" - Server: {} ({}:{})", s.name, s.ip, s.port);
-                }
+                println!("PARSED GLOBAL STATS: {:?}", stats);
+                assert!(stats.ed2k_connected);
+                assert!(stats.kad_connected);
             }
             Err(e) => {
-                println!("Could not connect (is amuled running?): {}", e);
+                println!("Could not connect: {}", e);
             }
         }
     }
 }
+
+
+
