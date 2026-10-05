@@ -2263,10 +2263,13 @@ async function renderUploadsView(): Promise<string> {
                   <td>
                     <div class="file-title-cell">
                       <span class="file-icon">${getFileIcon(u.name)}</span>
-                      <span class="file-name-text">${u.name}</span>
+                      <span class="file-name-text" title="${u.name}">${u.name || t("uploads.sharedFile")}</span>
                     </div>
                   </td>
-                  <td>${u.client_name}</td>
+                  <td>
+                    <div style="font-weight: 500;">${u.client_name}</div>
+                    ${u.client_software ? `<div style="font-size: 11px; color: var(--text-tertiary); margin-top: 2px;">${u.client_software}</div>` : ""}
+                  </td>
                   <td style="font-family: var(--font-mono); color: var(--warning);">▲ ${formatSpeed(u.speed)}</td>
                   <td>${formatSize(u.transferred)}</td>
                 </tr>`

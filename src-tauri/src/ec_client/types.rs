@@ -194,5 +194,6 @@ pub struct UploadInfo {
     pub name: String,
     pub speed: f64,
     pub client_name: String,
+    pub client_software: Option<String>,
     pub transferred: u64,
 }

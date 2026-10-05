@@ -642,19 +642,46 @@ impl EcConnection {
                     .unwrap_or(0) as f64;
                 let transferred = tag
                     .find_child(EC_TAG_CLIENT_UPLOAD_TOTAL)
+                    .or_else(|| tag.find_child(EC_TAG_CLIENT_UPLOAD_SESSION))
                     .and_then(|t| t.as_u64())
                     .unwrap_or(0);
                 let file_name = tag
-                    .find_child(EC_TAG_CLIENT_UPLOAD_FILE)
-                    .or_else(|| tag.find_child(EC_TAG_CLIENT_REMOTE_FILENAME))
+                    .find_child(EC_TAG_PARTFILE_NAME)
                     .and_then(|t| t.as_string())
-                    .unwrap_or_default();
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| {
+                        tag.find_child(EC_TAG_CLIENT_REMOTE_FILENAME)
+                            .and_then(|t| t.as_string())
+                            .filter(|s| !s.is_empty())
+                    })
+                    .or_else(|| {
+                        tag.find_child(EC_TAG_CLIENT_UPLOAD_FILE)
+                            .and_then(|t| t.as_string())
+                            .filter(|s| !s.is_empty())
+                    })
+                    .unwrap_or_else(|| "Archivo compartido".to_string());
+
+                let client_mod = tag
+                    .find_child(EC_TAG_CLIENT_SOFTWARE_NAME)
+                    .and_then(|t| t.as_string())
+                    .filter(|s| !s.is_empty());
+                let client_ver = tag
+                    .find_child(EC_TAG_CLIENT_SOFTWARE_VER)
+                    .and_then(|t| t.as_string())
+                    .filter(|s| !s.is_empty());
+                let client_software = match (client_mod, client_ver) {
+                    (Some(m), Some(v)) => Some(format!("{} {}", m, v)),
+                    (Some(m), None) => Some(m),
+                    (None, Some(v)) => Some(format!("eMule {}", v)),
+                    (None, None) => None,
+                };
 
                 uploads.push(UploadInfo {
                     hash,
                     name: file_name,
                     speed,
                     client_name,
+                    client_software,
                     transferred,
                 });
             }
@@ -761,6 +788,16 @@ mod tests {
             }
             Err(e) => {
                 println!("Could not connect: {}", e);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_inspect_upload_queue_tags() {
+        if let Ok(mut conn) = EcConnection::connect("127.0.0.1", 4712, "taurimule").await {
+            let uploads = conn.get_upload_queue().await.expect("get_upload_queue failed");
+            for u in &uploads {
+                assert!(!u.name.is_empty(), "Uploaded file name should not be empty!");
             }
         }
     }

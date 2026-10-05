@@ -64,6 +64,7 @@ export interface UploadInfo {
   name: string;
   speed: number;
   client_name: string;
+  client_software?: string;
   transferred: number;
 }
 
