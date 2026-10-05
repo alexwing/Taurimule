@@ -919,9 +919,12 @@ async function renderView() {
 
   // Refresh daemon status
   try {
-    currentDaemonStatus = await api.getDaemonStatus();
+    const status = await api.getDaemonStatus();
+    currentDaemonStatus = status;
   } catch {
-    currentDaemonStatus = null;
+    if (!lastStats) {
+      currentDaemonStatus = null;
+    }
   }
 
   switch (currentView) {
@@ -949,6 +952,7 @@ async function renderView() {
   }
 
   attachEventListeners();
+  updateDaemonControlBar();
 
   if (isFilterFocused) {
     const newFilter = document.getElementById("input-filter-downloads") as HTMLInputElement | null;
@@ -962,11 +966,106 @@ async function renderView() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Common Header Component
+// Common Header Component & Daemon Control
 // ═══════════════════════════════════════════════════════════════════
 
+function isDaemonActive(): boolean {
+  return Boolean(currentDaemonStatus?.running || currentDaemonStatus?.ec_connected);
+}
+
+async function handleToggleDaemon() {
+  const btn = document.getElementById("btn-toggle-daemon") as HTMLButtonElement | null;
+  if (btn) btn.disabled = true;
+  try {
+    if (isDaemonActive()) {
+      showToast(`⏳ Deteniendo demonio amuled...`);
+      await api.stopDaemon();
+      currentDaemonStatus = {
+        running: false,
+        pid: undefined,
+        ec_connected: false,
+        version: undefined,
+      };
+      updateDaemonControlBar(currentDaemonStatus);
+      showToast(`⏹ ${t("settings.daemonStopped")}`);
+    } else {
+      showToast(`⏳ Iniciando demonio amuled...`);
+      const newStatus = await api.startDaemon();
+      currentDaemonStatus = newStatus;
+      updateDaemonControlBar(newStatus);
+      showToast(`▶ amuled iniciado`);
+    }
+  } catch (e: any) {
+    showToast(`⚠️ Error al controlar demonio: ${e}`);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function updateDaemonControlBar(status?: DaemonStatus | null) {
+  if (status !== undefined) {
+    currentDaemonStatus = status;
+  }
+  const isRunning = isDaemonActive();
+  const pid = currentDaemonStatus?.pid;
+  const textLabel = isRunning
+    ? `amuled ${pid ? `(PID: ${pid})` : "(activo)"}`
+    : t("settings.daemonStopped");
+  const btnText = isRunning
+    ? `⏹ ${t("settings.stopDaemon")}`
+    : `▶ ${t("settings.startDaemon")}`;
+  const btnTitle = isRunning
+    ? t("settings.stopDaemon")
+    : t("settings.startDaemon");
+
+  const controlBars = document.querySelectorAll(".daemon-control-bar");
+  controlBars.forEach((bar) => {
+    const dot = bar.querySelector(".status-dot");
+    const labelSpan = bar.querySelector(".daemon-indicator span:last-child");
+    const btn = bar.querySelector("#btn-toggle-daemon") as HTMLButtonElement | null;
+
+    if (!dot || !labelSpan || !btn) {
+      bar.innerHTML = `
+        <div class="daemon-indicator">
+          <span class="status-dot ${isRunning ? "" : "stopped"}"></span>
+          <span>${textLabel}</span>
+        </div>
+        <button class="btn ${isRunning ? "btn-secondary" : "btn-primary"} btn-icon" id="btn-toggle-daemon" title="${btnTitle}">
+          ${btnText}
+        </button>
+      `;
+      bar.querySelector("#btn-toggle-daemon")?.addEventListener("click", handleToggleDaemon);
+      return;
+    }
+
+    if (dot.classList.contains("stopped") === isRunning) {
+      if (isRunning) {
+        dot.classList.remove("stopped");
+      } else {
+        dot.classList.add("stopped");
+      }
+    }
+
+    if (labelSpan.textContent !== textLabel) {
+      labelSpan.textContent = textLabel;
+    }
+
+    if (btn.getAttribute("title") !== btnTitle || btn.textContent?.trim() !== btnText.trim()) {
+      btn.title = btnTitle;
+      btn.textContent = btnText;
+      if (isRunning) {
+        btn.classList.remove("btn-primary");
+        btn.classList.add("btn-secondary");
+      } else {
+        btn.classList.remove("btn-secondary");
+        btn.classList.add("btn-primary");
+      }
+    }
+  });
+}
+
 function renderHeader(title: string, subtitle: string, breadcrumb: string): string {
-  const isRunning = currentDaemonStatus?.running ?? false;
+  const isRunning = isDaemonActive();
   const pid = currentDaemonStatus?.pid;
 
   return `
@@ -983,13 +1082,11 @@ function renderHeader(title: string, subtitle: string, breadcrumb: string): stri
       <div class="daemon-control-bar">
         <div class="daemon-indicator">
           <span class="status-dot ${isRunning ? "" : "stopped"}"></span>
-          <span>${isRunning ? `amuled ${pid ? `(PID: ${pid})` : ""}` : t("settings.daemonStopped")}</span>
+          <span>${isRunning ? `amuled ${pid ? `(PID: ${pid})` : "(activo)"}` : t("settings.daemonStopped")}</span>
         </div>
-        ${
-          isRunning
-            ? `<button class="btn btn-secondary btn-icon" id="btn-toggle-daemon" title="${t("settings.stopDaemon")}">⏹ ${t("settings.stopDaemon")}</button>`
-            : `<button class="btn btn-primary btn-icon" id="btn-toggle-daemon" title="${t("settings.startDaemon")}">▶ ${t("settings.startDaemon")}</button>`
-        }
+        <button class="btn ${isRunning ? "btn-secondary" : "btn-primary"} btn-icon" id="btn-toggle-daemon" title="${isRunning ? t("settings.stopDaemon") : t("settings.startDaemon")}">
+          ${isRunning ? `⏹ ${t("settings.stopDaemon")}` : `▶ ${t("settings.startDaemon")}`}
+        </button>
       </div>
     </div>`;
 }
@@ -1350,11 +1447,11 @@ function renderDownloadsTableRows(items: DownloadInfo[]): string {
           ${getLogoSvg(currentLogoState, 56, "dl-empty")}
         </div>
         ${
-          !currentDaemonStatus?.ec_connected
+          !isDaemonActive()
             ? `
             <h3>⏳ ${t("downloads.connectingDaemonTitle")}</h3>
             <p style="margin-bottom: 12px;">${t("downloads.connectingDaemonSub")}</p>
-            <button class="btn btn-primary" id="btn-toggle-daemon">▶ ${t("settings.startDaemon")}</button>
+            <button class="btn btn-primary" id="btn-empty-toggle-daemon">▶ ${t("settings.startDaemon")}</button>
             `
             : `
             <h3>${(downloadFilterQuery || !showCompletedDownloads) && cachedDownloads.length > 0 ? t("downloads.emptyFilterTitle") : t("downloads.emptyQueueTitle")}</h3>
@@ -1427,14 +1524,7 @@ function updateDownloadsTableIncremental() {
       if (filterInput) filterInput.value = "";
       updateDownloadsTableIncremental();
     });
-    tbody.querySelector("#btn-toggle-daemon")?.addEventListener("click", async () => {
-      try {
-        if (currentDaemonStatus?.running) await api.stopDaemon();
-        else await api.startDaemon();
-      } catch (e) {
-        console.error("Failed to toggle daemon:", e);
-      }
-    });
+    tbody.querySelector("#btn-empty-toggle-daemon")?.addEventListener("click", handleToggleDaemon);
     return;
   }
 
@@ -1526,7 +1616,27 @@ function applySnapshotToDownloadsView(snap?: Snapshot) {
       lastStats = snap.stats;
       updateFooter(snap.stats);
     }
+    if (snap.connected) {
+      if (!currentDaemonStatus || !currentDaemonStatus.running || !currentDaemonStatus.ec_connected) {
+        currentDaemonStatus = {
+          running: true,
+          ec_connected: true,
+          pid: currentDaemonStatus?.pid,
+          version: currentDaemonStatus?.version,
+        };
+        if (!currentDaemonStatus.pid) {
+          api.getDaemonStatus().then((st) => {
+            if (st) {
+              currentDaemonStatus = st;
+              updateDaemonControlBar(st);
+            }
+          }).catch(() => {});
+        }
+      }
+    }
   }
+
+  updateDaemonControlBar();
 
   const badgeEl = document.getElementById("badge-dl-count");
   if (badgeEl) badgeEl.textContent = cachedDownloads.length.toString();
@@ -2615,17 +2725,9 @@ function attachEventListeners() {
 
 
   // Toggle daemon (start/stop)
-  document.getElementById("btn-toggle-daemon")?.addEventListener("click", async () => {
-    try {
-      if (currentDaemonStatus?.running) {
-        await api.stopDaemon();
-      } else {
-        await api.startDaemon();
-      }
-      setTimeout(() => renderView(), 800);
-    } catch (e) {
-      console.error("Failed to toggle daemon:", e);
-    }
+  document.querySelectorAll(".daemon-control-bar #btn-toggle-daemon").forEach((btn) => {
+    btn.removeEventListener("click", handleToggleDaemon as any);
+    btn.addEventListener("click", handleToggleDaemon);
   });
 
   // Settings: Browse & Open Incoming Folder
@@ -3457,6 +3559,7 @@ async function bootApplication() {
     splashEl.classList.add("fade-out");
     setTimeout(() => {
       splashEl.remove();
+      updateDaemonControlBar();
     }, 450);
     renderView();
   };
@@ -3483,6 +3586,7 @@ async function bootApplication() {
     try {
       const status = await api.getDaemonStatus();
       currentDaemonStatus = status;
+      updateDaemonControlBar(status);
 
       if (status.running && !status.ec_connected) {
         if (statusEl) statusEl.textContent = t("splash.stepEc");
@@ -3507,6 +3611,8 @@ async function bootApplication() {
         } catch (e) {
           console.warn("Initial snapshot load error:", e);
         }
+
+        updateDaemonControlBar(status);
 
         if (statusEl) statusEl.textContent = t("splash.stepReady");
         setTimeout(() => {
@@ -3598,15 +3704,55 @@ listen<Snapshot>("downloads-updated", (event) => {
   const badgeEl = document.getElementById("badge-dl-count");
   if (badgeEl) badgeEl.textContent = cachedDownloads.length.toString();
 
+  if (snap.connected) {
+    if (!currentDaemonStatus || !currentDaemonStatus.running || !currentDaemonStatus.ec_connected) {
+      currentDaemonStatus = {
+        running: true,
+        ec_connected: true,
+        pid: currentDaemonStatus?.pid,
+        version: currentDaemonStatus?.version,
+      };
+      if (!currentDaemonStatus.pid) {
+        api.getDaemonStatus().then((st) => {
+          if (st) {
+            currentDaemonStatus = st;
+            updateDaemonControlBar(st);
+          }
+        }).catch(() => {});
+      }
+    }
+  }
+
+  updateDaemonControlBar();
+
   if (currentView === "downloads") {
     applySnapshotToDownloadsView(snap);
   }
 });
 
 listen<{ connected: boolean; error: string | null }>("daemon-status", (event) => {
+  if (currentDaemonStatus) {
+    currentDaemonStatus.ec_connected = event.payload.connected;
+    currentDaemonStatus.running = event.payload.connected;
+  } else {
+    currentDaemonStatus = {
+      running: event.payload.connected,
+      ec_connected: event.payload.connected,
+      pid: undefined,
+      version: undefined,
+    };
+  }
   if (!event.payload.connected) {
     updateFooter(null);
+  } else if (!currentDaemonStatus.pid) {
+    api.getDaemonStatus().then((st) => {
+      if (st) {
+        currentDaemonStatus = st;
+        updateDaemonControlBar(st);
+      }
+    }).catch(() => {});
   }
+  updateDaemonControlBar(currentDaemonStatus);
 });
 
 // Deshabilitar globalmente el menú contextual nativo del navegador (Back, Forward, Reload, Inspect, etc.)

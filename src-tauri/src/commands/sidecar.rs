@@ -23,13 +23,31 @@ pub async fn stop_daemon(
 pub async fn get_daemon_status(
     state: State<'_, AppState>,
 ) -> Result<DaemonStatus, String> {
-    let pid = state.sidecar_pid.lock().await;
+    let mut pid = *state.sidecar_pid.lock().await;
     let ec = state.ec.lock().await;
+    let ec_connected = ec.is_some();
+    let running = pid.is_some() || ec_connected;
+
+    if ec_connected && pid.is_none() {
+        #[cfg(target_os = "windows")]
+        {
+            if let Ok(output) = std::process::Command::new("powershell")
+                .args(["-NoProfile", "-Command", "(Get-Process -Name 'amuled' -ErrorAction SilentlyContinue | Select-Object -First 1).Id"])
+                .output()
+            {
+                if let Ok(s) = std::str::from_utf8(&output.stdout) {
+                    if let Ok(found_pid) = s.trim().parse::<u32>() {
+                        pid = Some(found_pid);
+                    }
+                }
+            }
+        }
+    }
 
     Ok(DaemonStatus {
-        running: pid.is_some(),
-        pid: *pid,
-        ec_connected: ec.is_some(),
+        running,
+        pid,
+        ec_connected,
         version: ec.as_ref().map(|c| c.server_version().to_string()),
     })
 }
