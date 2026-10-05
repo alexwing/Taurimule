@@ -68,6 +68,8 @@ jobs:
             New-Item -ItemType Directory -Force -Path $portableDir
             Copy-Item $mainExe.FullName "$portableDir/TauriMule.exe" -Force
             Copy-Item $sidecar.FullName "$portableDir/$($sidecar.Name)" -Force
+            Copy-Item "src-tauri/binaries/*.dll" "$portableDir/" -Force
+            Copy-Item "src-tauri/binaries/ca-bundle.crt" "$portableDir/" -Force -ErrorAction SilentlyContinue
             Compress-Archive -Path "$portableDir/*" -DestinationPath "windows-dist/TauriMule-v$version-Portable.zip" -Force
             Remove-Item -Recurse -Force $portableDir
             Write-Host "Prepared Portable ZIP: windows-dist/TauriMule-v$version-Portable.zip"
