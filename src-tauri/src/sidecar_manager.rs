@@ -11,6 +11,10 @@ use tauri_plugin_shell::process::CommandEvent;
 
 use crate::AppState;
 
+/// CREATE_NO_WINDOW: avoids a console flashing when spawning helper tools.
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 const EC_PORT: u16 = 4712;
 const EC_PASSWORD: &str = "taurimule";
 
@@ -31,14 +35,12 @@ fn ensure_amule_config() {
             if line.trim() == "[ExternalConnect]" {
                 has_ec_section = true;
             }
-            if line.starts_with("IncomingDir=") {
-                let val = &line["IncomingDir=".len()..];
+            if let Some(val) = line.strip_prefix("IncomingDir=") {
                 let normalized = val.trim().replace('\\', "/").trim_end_matches('/').to_string();
                 let new_line = format!("IncomingDir={}", normalized);
                 if line != new_line { modified = true; }
                 new_lines.push(new_line);
-            } else if line.starts_with("TempDir=") {
-                let val = &line["TempDir=".len()..];
+            } else if let Some(val) = line.strip_prefix("TempDir=") {
                 let normalized = val.trim().replace('\\', "/").trim_end_matches('/').to_string();
                 let new_line = format!("TempDir={}", normalized);
                 if line != new_line { modified = true; }
@@ -46,6 +48,15 @@ fn ensure_amule_config() {
             } else if line.starts_with("ECPassword=") {
                 // Ensure password hash matches MD5("taurimule")
                 let new_line = "ECPassword=fbb1617ec78c584fc2d75d801fd62e2b".to_string();
+                if line != new_line { modified = true; }
+                new_lines.push(new_line);
+            } else if line.starts_with("ECAddress=") {
+                // Never listen on all interfaces (imported confs may leave it empty)
+                let new_line = "ECAddress=127.0.0.1".to_string();
+                if line != new_line { modified = true; }
+                new_lines.push(new_line);
+            } else if line.starts_with("AcceptExternalConnections=") {
+                let new_line = "AcceptExternalConnections=1".to_string();
                 if line != new_line { modified = true; }
                 new_lines.push(new_line);
             } else {
@@ -70,9 +81,92 @@ fn ensure_amule_config() {
     }
 }
 
+/// Build a `tokio::process::Command` that never opens a console window on Windows.
+fn helper_command(program: &str) -> tokio::process::Command {
+    #[allow(unused_mut)]
+    let mut cmd = tokio::process::Command::new(program);
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
+/// Whether a process with this PID exists and is an amuled.
+async fn is_pid_alive(pid: u32) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        match helper_command("tasklist")
+            .args(["/FI", &format!("PID eq {}", pid), "/NH", "/FO", "CSV"])
+            .output()
+            .await
+        {
+            Ok(out) => String::from_utf8_lossy(&out.stdout)
+                .to_ascii_lowercase()
+                .contains("amuled"),
+            Err(_) => false,
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        match helper_command("kill").args(["-0", &pid.to_string()]).status().await {
+            Ok(status) => status.success(),
+            Err(_) => false,
+        }
+    }
+}
+
+/// PID of the first amuled process found on the system, if any.
+pub(crate) async fn find_amuled_pid() -> Option<u32> {
+    #[cfg(target_os = "windows")]
+    {
+        let out = helper_command("tasklist")
+            .args(["/FI", "IMAGENAME eq amuled.exe", "/NH", "/FO", "CSV"])
+            .output()
+            .await
+            .ok()?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        // Row format: "amuled.exe","1234","Console","1","50,000 K"
+        let line = text
+            .lines()
+            .find(|l| l.to_ascii_lowercase().contains("amuled"))?;
+        line.split(',')
+            .nth(1)?
+            .trim()
+            .trim_matches('"')
+            .parse::<u32>()
+            .ok()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let out = helper_command("pgrep").args(["-x", "amuled"]).output().await.ok()?;
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .next()?
+            .trim()
+            .parse::<u32>()
+            .ok()
+    }
+}
+
+/// Force-kill a process (and its tree on Windows) by PID. Never by image name.
+async fn kill_pid(pid: u32) {
+    #[cfg(target_os = "windows")]
+    let res = helper_command("taskkill")
+        .args(["/F", "/T", "/PID", &pid.to_string()])
+        .output()
+        .await;
+    #[cfg(not(target_os = "windows"))]
+    let res = helper_command("kill").args(["-9", &pid.to_string()]).output().await;
+    if let Err(e) = res {
+        log::warn!("Failed to kill PID {}: {}", pid, e);
+    }
+}
+
 /// Start the amuled daemon as a sidecar process.
 pub async fn start_amuled(handle: &AppHandle) -> Result<(), String> {
     let state = handle.state::<AppState>();
+
+    // Serialize start/stop; held until pid and child are stored.
+    let lifecycle_guard = state.lifecycle.lock().await;
 
     // Check if already running in current session
     {
@@ -83,13 +177,37 @@ pub async fn start_amuled(handle: &AppHandle) -> Result<(), String> {
         }
     }
 
-    // Clean up any stale or orphaned amuled instances from previous crashes / unclosed sessions
-    #[cfg(target_os = "windows")]
-    {
-        let _ = std::process::Command::new("taskkill")
-            .args(["/F", "/IM", "amuled.exe"])
-            .output();
-        tokio::time::sleep(Duration::from_millis(300)).await;
+    // Adoption: a live amuled that accepts our password uses our config
+    // (typically left over from a previous session that did not close cleanly).
+    let tcp_open = matches!(
+        tokio::time::timeout(
+            Duration::from_millis(500),
+            tokio::net::TcpStream::connect(("127.0.0.1", EC_PORT)),
+        )
+        .await,
+        Ok(Ok(_))
+    );
+    if tcp_open {
+        match tokio::time::timeout(Duration::from_secs(2), connect_ec(handle)).await {
+            Ok(Ok(())) => {
+                let adopted = find_amuled_pid().await;
+                log::info!("Adopted an existing amuled (PID {:?}) on EC port {}", adopted, EC_PORT);
+                *state.sidecar_pid.lock().await = adopted;
+                return Ok(());
+            }
+            Ok(Err(e)) => {
+                return Err(format!(
+                    "Another aMule/amuled is listening on port {} with a different password; close it and try again ({})",
+                    EC_PORT, e
+                ));
+            }
+            Err(_) => {
+                return Err(format!(
+                    "Another aMule/amuled is listening on port {} and did not answer the EC handshake; close it and try again",
+                    EC_PORT
+                ));
+            }
+        }
     }
 
     ensure_amule_config();
@@ -120,11 +238,10 @@ pub async fn start_amuled(handle: &AppHandle) -> Result<(), String> {
     let pid = child.pid();
     log::info!("amuled spawned with PID: {}", pid);
 
-    // Store the PID
-    {
-        let mut pid_lock = state.sidecar_pid.lock().await;
-        *pid_lock = Some(pid);
-    }
+    // Store the PID and the child handle
+    *state.sidecar_pid.lock().await = Some(pid);
+    *state.sidecar_child.lock().await = Some(child);
+    drop(lifecycle_guard);
 
     // Monitor stdout/stderr in background
     let handle_clone = handle.clone();
@@ -145,15 +262,16 @@ pub async fn start_amuled(handle: &AppHandle) -> Result<(), String> {
                         status.code,
                         status.signal
                     );
-                    // Clean up state
+                    // Clean up state only if it still belongs to this process
                     let state = handle_clone.state::<AppState>();
-                    {
-                        let mut pid_lock = state.sidecar_pid.lock().await;
+                    let mut pid_lock = state.sidecar_pid.lock().await;
+                    if *pid_lock == Some(pid) {
                         *pid_lock = None;
-                    }
-                    {
-                        let mut ec_lock = state.ec.lock().await;
-                        *ec_lock = None;
+                        drop(pid_lock);
+                        *state.sidecar_child.lock().await = None;
+                        *state.ec.lock().await = None;
+                    } else {
+                        log::info!("[amuled] Ignoring Terminated of stale PID {}", pid);
                     }
                     break;
                 }
@@ -203,12 +321,16 @@ pub(crate) async fn connect_ec(handle: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Gracefully stop the amuled daemon.
+/// Gracefully stop the amuled daemon, waiting for it to persist its state.
 pub async fn stop_amuled(handle: &AppHandle) {
     let state = handle.state::<AppState>();
+    let _lifecycle_guard = state.lifecycle.lock().await;
+
+    let pid = *state.sidecar_pid.lock().await;
+    let child = state.sidecar_child.lock().await.take();
 
     // Step 1: Send EC shutdown command (graceful)
-    {
+    let shutdown = async {
         let mut ec = state.ec.lock().await;
         if let Some(ref mut conn) = *ec {
             log::info!("Sending EC shutdown to amuled...");
@@ -217,31 +339,45 @@ pub async fn stop_amuled(handle: &AppHandle) {
             }
         }
         *ec = None;
+    };
+    if tokio::time::timeout(Duration::from_secs(5), shutdown).await.is_err() {
+        log::warn!("EC shutdown timed out");
+        if let Ok(mut ec) = tokio::time::timeout(Duration::from_secs(1), state.ec.lock()).await {
+            *ec = None;
+        }
     }
 
-    // Step 2: Clear PID reference
-    {
-        let mut pid = state.sidecar_pid.lock().await;
-        if let Some(p) = *pid {
-            log::info!("amuled (PID {}) shutdown initiated", p);
+    // Step 2: Wait for the process to exit on its own so it can save its files
+    if let Some(p) = pid {
+        let started = std::time::Instant::now();
+        let mut exited = false;
+        while started.elapsed() < Duration::from_secs(15) {
+            let cleared = state.sidecar_pid.lock().await.is_none();
+            if cleared || !is_pid_alive(p).await {
+                exited = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
 
-            // On Windows, force-kill the process tree to prevent zombies
-            #[cfg(target_os = "windows")]
-            {
-                let _ = std::process::Command::new("taskkill")
-                    .args(["/F", "/T", "/PID", &p.to_string()])
-                    .output();
+        if exited {
+            log::info!("amuled (PID {}) exited after {} ms", p, started.elapsed().as_millis());
+        } else {
+            log::warn!("amuled (PID {}) did not exit within 15 s, killing it", p);
+            match child {
+                Some(c) => {
+                    if let Err(e) = c.kill() {
+                        log::warn!("child.kill() failed: {}", e);
+                        kill_pid(p).await;
+                    }
+                }
+                None => kill_pid(p).await,
             }
         }
-        *pid = None;
-
-        #[cfg(target_os = "windows")]
-        {
-            let _ = std::process::Command::new("taskkill")
-                .args(["/F", "/IM", "amuled.exe"])
-                .output();
-        }
     }
+
+    *state.sidecar_pid.lock().await = None;
+    *state.sidecar_child.lock().await = None;
 
     log::info!("amuled stopped");
 }

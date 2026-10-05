@@ -239,3 +239,37 @@ pub const EC_DETAIL_FULL: u8 = 0x02;
 pub const EC_SEARCH_LOCAL: u8 = 0;
 pub const EC_SEARCH_GLOBAL: u8 = 1;
 pub const EC_SEARCH_KAD: u8 = 2;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Values from amule-org/amule src/libs/ec/cpp/ECCodes.h
+    #[test]
+    fn auth_opcodes_match_amule() {
+        assert_eq!(EC_OP_NOOP, 0x01);
+        assert_eq!(EC_OP_AUTH_REQ, 0x02);
+        assert_eq!(EC_OP_AUTH_FAIL, 0x03);
+        assert_eq!(EC_OP_AUTH_OK, 0x04);
+        assert_eq!(EC_OP_AUTH_SALT, 0x4F);
+        assert_eq!(EC_OP_AUTH_PASSWD, 0x50);
+    }
+
+    #[test]
+    fn tag_types_and_flags_match_amule() {
+        assert_eq!(EC_TAGTYPE_UNKNOWN, 0);
+        assert_eq!(EC_TAGTYPE_CUSTOM, 1);
+        assert_eq!(EC_TAGTYPE_UINT8, 2);
+        assert_eq!(EC_TAGTYPE_UINT16, 3);
+        assert_eq!(EC_TAGTYPE_UINT32, 4);
+        assert_eq!(EC_TAGTYPE_UINT64, 5);
+        assert_eq!(EC_TAGTYPE_STRING, 6);
+        assert_eq!(EC_TAGTYPE_DOUBLE, 7);
+        assert_eq!(EC_TAGTYPE_IPV4, 8);
+        assert_eq!(EC_TAGTYPE_HASH16, 9);
+        assert_eq!(EC_TAGTYPE_UINT128, 10);
+        assert_eq!(EC_FLAG_ZLIB, 0x01);
+        assert_eq!(EC_FLAG_BASE, 0x20);
+        assert_eq!(EC_PROTOCOL_VERSION, 0x0204);
+    }
+}

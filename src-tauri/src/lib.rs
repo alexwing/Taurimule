@@ -70,6 +70,10 @@ pub struct AppState {
     pub ec: Arc<Mutex<Option<ec_client::EcConnection>>>,
     /// PID of the running amuled sidecar process.
     pub sidecar_pid: Arc<Mutex<Option<u32>>>,
+    /// Handle of the sidecar we spawned (None when adopted or stopped).
+    pub sidecar_child: Arc<Mutex<Option<tauri_plugin_shell::process::CommandChild>>>,
+    /// Serializes daemon start and stop.
+    pub lifecycle: Arc<Mutex<()>>,
     /// Last snapshot from the backend poller.
     pub snapshot: Arc<std::sync::Mutex<Snapshot>>,
 }
@@ -204,6 +208,8 @@ pub fn run() {
         .manage(AppState {
             ec: Arc::new(Mutex::new(None)),
             sidecar_pid: Arc::new(Mutex::new(None)),
+            sidecar_child: Arc::new(Mutex::new(None)),
+            lifecycle: Arc::new(Mutex::new(())),
             snapshot: Arc::new(std::sync::Mutex::new(Snapshot::default())),
         })
         .setup(|app| {
@@ -221,6 +227,9 @@ pub fn run() {
                 .menu(&menu)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "quit" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.hide();
+                        }
                         let handle = app.clone();
                         tauri::async_runtime::block_on(async {
                             sidecar_manager::stop_amuled(&handle).await;
@@ -252,18 +261,18 @@ pub fn run() {
                     }
                     _ => {}
                 })
-                .on_tray_icon_event(|tray, event| match event {
-                    TrayIconEvent::Click {
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Up,
                         ..
-                    } => {
+                    } = event
+                    {
                         if let Some(window) = tray.app_handle().get_webview_window("main") {
                             let _ = window.show();
                             let _ = window.set_focus();
                         }
                     }
-                    _ => {}
                 })
                 .build(app)?;
 

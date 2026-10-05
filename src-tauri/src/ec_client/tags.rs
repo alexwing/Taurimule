@@ -13,6 +13,9 @@ use std::io::{Cursor, Read, Write};
 
 use super::opcodes::*;
 
+/// Maximum nesting depth accepted when parsing tags (guards against stack exhaustion).
+pub const MAX_TAG_DEPTH: usize = 16;
+
 /// A single EC protocol tag with optional children.
 #[derive(Debug, Clone)]
 pub struct EcTag {
@@ -121,7 +124,7 @@ impl EcTag {
     // ───────────────── Value Getters ─────────────────
 
     pub fn as_u8(&self) -> Option<u8> {
-        if self.data.len() >= 1 {
+        if !self.data.is_empty() {
             Some(self.data[0])
         } else {
             None
@@ -242,6 +245,14 @@ impl EcTag {
 
     /// Deserialize a tag from a byte buffer.
     pub fn read_from(cursor: &mut Cursor<&[u8]>) -> Result<Self, String> {
+        Self::read_from_depth(cursor, 0)
+    }
+
+    fn read_from_depth(cursor: &mut Cursor<&[u8]>, depth: usize) -> Result<Self, String> {
+        if depth >= MAX_TAG_DEPTH {
+            return Err(format!("Tag nesting too deep (max {})", MAX_TAG_DEPTH));
+        }
+
         let tmp_name = cursor
             .read_u16::<BigEndian>()
             .map_err(|e| format!("Failed to read tag name: {}", e))?;
@@ -265,9 +276,18 @@ impl EcTag {
                 .read_u16::<BigEndian>()
                 .map_err(|e| format!("Failed to read child count: {}", e))? as usize;
 
+            // TAGLEN covers children + own data, all of which must still be in the buffer.
+            if tag_len > remaining(cursor) {
+                return Err(format!(
+                    "Tag length {} exceeds remaining {} bytes",
+                    tag_len,
+                    remaining(cursor)
+                ));
+            }
+
             for _ in 0..child_count {
                 let start_pos = cursor.position();
-                let child = EcTag::read_from(cursor)?;
+                let child = EcTag::read_from_depth(cursor, depth + 1)?;
                 children_total_size += (cursor.position() - start_pos) as usize;
                 children.push(child);
             }
@@ -275,6 +295,13 @@ impl EcTag {
 
         // Remaining bytes are the tag's own data
         let data_size = tag_len.saturating_sub(children_total_size);
+        if data_size > remaining(cursor) {
+            return Err(format!(
+                "Tag data length {} exceeds remaining {} bytes",
+                data_size,
+                remaining(cursor)
+            ));
+        }
         let mut data = vec![0u8; data_size];
         cursor
             .read_exact(&mut data)
@@ -286,5 +313,138 @@ impl EcTag {
             data,
             children,
         })
+    }
+}
+
+/// Bytes left to read in the cursor's buffer.
+fn remaining(cursor: &Cursor<&[u8]>) -> usize {
+    cursor
+        .get_ref()
+        .len()
+        .saturating_sub(cursor.position() as usize)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn encode(tag: &EcTag) -> Vec<u8> {
+        let mut buf = Vec::new();
+        tag.write_to(&mut buf);
+        buf
+    }
+
+    fn decode(bytes: &[u8]) -> Result<EcTag, String> {
+        EcTag::read_from(&mut Cursor::new(bytes))
+    }
+
+    fn assert_same(a: &EcTag, b: &EcTag) {
+        assert_eq!(a.name, b.name);
+        assert_eq!(a.tag_type, b.tag_type);
+        assert_eq!(a.data, b.data);
+        assert_eq!(a.children.len(), b.children.len());
+        for (x, y) in a.children.iter().zip(&b.children) {
+            assert_same(x, y);
+        }
+    }
+
+    fn round_trip(tag: &EcTag) -> EcTag {
+        let bytes = encode(tag);
+        assert_eq!(bytes.len(), tag.wire_size() as usize);
+        let back = decode(&bytes).expect("round-trip decode");
+        assert_same(tag, &back);
+        back
+    }
+
+    /// Chain of `levels` nested tags (a single leaf at the bottom).
+    fn nested(levels: usize) -> EcTag {
+        let mut tag = EcTag::new_u8(1, 7);
+        for _ in 1..levels {
+            let mut parent = EcTag::new_empty(1);
+            parent.add_child(tag);
+            tag = parent;
+        }
+        tag
+    }
+
+    #[test]
+    fn round_trip_integers() {
+        assert_eq!(round_trip(&EcTag::new_u8(0x10, 0xAB)).as_u8(), Some(0xAB));
+        assert_eq!(round_trip(&EcTag::new_u16(0x11, 0xBEEF)).as_u16(), Some(0xBEEF));
+        assert_eq!(round_trip(&EcTag::new_u32(0x12, 0xDEAD_BEEF)).as_u32(), Some(0xDEAD_BEEF));
+        assert_eq!(
+            round_trip(&EcTag::new_u64(0x13, 0x0123_4567_89AB_CDEF)).as_u64(),
+            Some(0x0123_4567_89AB_CDEF)
+        );
+    }
+
+    #[test]
+    fn round_trip_strings() {
+        assert_eq!(round_trip(&EcTag::new_string(0x20, "hola")).as_string().as_deref(), Some("hola"));
+        assert_eq!(round_trip(&EcTag::new_string(0x21, "ñ日本")).as_string().as_deref(), Some("ñ日本"));
+        assert_eq!(round_trip(&EcTag::new_string(0x22, "")).as_string().as_deref(), Some(""));
+    }
+
+    #[test]
+    fn round_trip_hash16() {
+        let hash: [u8; 16] = core::array::from_fn(|i| i as u8 * 17);
+        assert_eq!(round_trip(&EcTag::new_hash16(0x30, &hash)).as_hash16(), Some(hash));
+    }
+
+    #[test]
+    fn round_trip_two_level_children() {
+        let mut grandchild = EcTag::new_string(0x43, "nieto");
+        grandchild.add_child(EcTag::new_u8(0x44, 1));
+        let mut child = EcTag::new_u32(0x41, 99);
+        child.add_child(grandchild);
+        child.add_child(EcTag::new_hash16(0x42, &[9u8; 16]));
+        let mut root = EcTag::new_string(0x40, "raíz");
+        root.add_child(child);
+        root.add_child(EcTag::new_u16(0x45, 5));
+
+        let back = round_trip(&root);
+        assert_eq!(back.as_string().as_deref(), Some("raíz"));
+        let child = back.find_child(0x41).unwrap();
+        assert_eq!(child.as_u32(), Some(99));
+        assert_eq!(child.find_child(0x43).unwrap().as_string().as_deref(), Some("nieto"));
+        assert_eq!(child.find_child(0x43).unwrap().find_child(0x44).unwrap().as_u8(), Some(1));
+    }
+
+    #[test]
+    fn truncated_buffer_is_err_for_every_prefix() {
+        let mut child = EcTag::new_string(0x51, "ñ日本");
+        child.add_child(EcTag::new_u16(0x52, 7));
+        let mut root = EcTag::new_u32(0x50, 1234);
+        root.add_child(child);
+        root.add_child(EcTag::new_hash16(0x53, &[3u8; 16]));
+        let bytes = encode(&root);
+
+        for len in 0..bytes.len() {
+            assert!(decode(&bytes[..len]).is_err(), "prefix of {} bytes should fail", len);
+        }
+        assert!(decode(&bytes).is_ok());
+    }
+
+    #[test]
+    fn absurd_length_is_err() {
+        // name=1 (no children), type=UINT8, len=0xFFFFFFFF, then 4 real bytes
+        let mut bytes = vec![0x00, 0x02, EC_TAGTYPE_UINT8];
+        bytes.extend_from_slice(&0xFFFF_FFFFu32.to_be_bytes());
+        bytes.extend_from_slice(&[1, 2, 3, 4]);
+        assert!(decode(&bytes).is_err());
+
+        // Same with the has_children bit and a child count
+        let mut bytes = vec![0x00, 0x03, EC_TAGTYPE_UINT8];
+        bytes.extend_from_slice(&0xFFFF_FFFFu32.to_be_bytes());
+        bytes.extend_from_slice(&[0xFF, 0xFF, 1, 2, 3, 4]);
+        assert!(decode(&bytes).is_err());
+    }
+
+    #[test]
+    fn nesting_depth_is_limited() {
+        assert!(decode(&encode(&nested(20))).is_err());
+        assert!(decode(&encode(&nested(10))).is_ok());
+        assert!(decode(&encode(&nested(MAX_TAG_DEPTH))).is_ok());
+        assert!(decode(&encode(&nested(MAX_TAG_DEPTH + 1))).is_err());
     }
 }

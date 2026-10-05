@@ -150,7 +150,8 @@ flowchart TD
 ### Prerequisites
 - [Node.js](https://nodejs.org/) (v18 or higher) & `npm`
 - [Rust](https://rustup.rs/) (latest stable toolchain)
-- Windows 10/11, Linux, or macOS
+- Windows 10/11
+- Linux and macOS are not supported yet: the bundled `amuled` sidecar and the release pipeline are Windows-only.
 
 ### Clone & Install
 ```bash
@@ -178,17 +179,43 @@ The compiled standalone binary and installer will be generated in `src-tauri/tar
 Taurimule/
 ├── public/                  # Static assets & icons
 ├── src/
+│   ├── app/
+│   │   ├── actions.ts       # Delegated [data-action] / [data-nav] click handlers
+│   │   ├── boot.ts          # Boot orchestration & Tauri event listeners
+│   │   ├── ed2k-links.ts    # Sequential queue for ed2k:// deep-link additions
+│   │   ├── polling.ts       # Status polling & footer status bar
+│   │   ├── router.ts        # SPA navigation & view rendering
+│   │   ├── shell.ts         # Sidebar / content / footer app shell
+│   │   └── splash.ts        # Startup splash while amuled connects
 │   ├── lib/
 │   │   ├── context-menu.ts  # Windows Fluent context menu
+│   │   ├── ed2k.ts          # ed2k:// link parser
 │   │   ├── filename-cleaner.ts # Smart regex cleaning & diff engine
+│   │   ├── format.ts        # Size / speed formatters & file icons
+│   │   ├── html.ts          # HTML escaping helper
 │   │   ├── i18n/            # Translations (en, es, fr, de)
 │   │   ├── logo.ts          # Dynamic SVG stateful brand logo
+│   │   ├── sort.ts          # Download & search table sorting
 │   │   ├── tauri-bridge.ts  # Typed Rust IPC bridge
 │   │   └── theme.ts         # Fluent dark/light theme manager
+│   ├── state/
+│   │   └── store.ts         # Mutable state shared across modules
 │   ├── styles/
 │   │   └── global.css       # Fluent WinUI 3 CSS design system
-│   ├── index.html           # SPA entrypoint
-│   └── main.ts              # Core router, tabs manager & UI controllers
+│   ├── ui/
+│   │   ├── app-logo.ts      # Logo state, favicon & tray icon sync
+│   │   ├── daemon-control.ts # amuled start/stop bar & daemon status
+│   │   ├── dialogs.ts       # Confirm dialog & toast notifications
+│   │   ├── ed2k-modal.ts    # Add eD2k link(s) modal
+│   │   ├── header.ts        # Common view header
+│   │   └── server-modals.ts # Add server & update server.met modals
+│   ├── views/
+│   │   ├── downloads.ts     # Downloads view, context menu & toolbar
+│   │   ├── search.ts        # Search view, tabs, history & polling
+│   │   ├── servers.ts       # eD2k servers & Kad view
+│   │   ├── settings.ts      # Settings, import assistant & appearance
+│   │   └── uploads.ts       # Uploads queue view
+│   └── main.ts              # Bootstrap: CSS, theme/i18n init, bootApplication()
 ├── src-tauri/
 │   ├── binaries/            # amuled sidecar binary
 │   ├── src/

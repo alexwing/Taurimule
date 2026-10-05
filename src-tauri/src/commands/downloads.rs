@@ -64,6 +64,11 @@ pub fn normalize_ed2k_link(raw: &str) -> Option<String> {
 
 pub fn parse_ed2k_link(link: &str) -> Option<ParsedEd2kLink> {
     let normalized = normalize_ed2k_link(link)?;
+    parse_normalized_ed2k_link(&normalized)
+}
+
+/// Parses a link already produced by `normalize_ed2k_link`, without decoding it again.
+fn parse_normalized_ed2k_link(normalized: &str) -> Option<ParsedEd2kLink> {
     let prefix = "ed2k://|file|";
     let start_idx = normalized.find(prefix)? + prefix.len();
     let rest = &normalized[start_idx..];
@@ -173,7 +178,9 @@ pub async fn add_ed2k_link(
     let normalized = normalize_ed2k_link(&link).ok_or_else(|| {
         "El enlace eD2k no tiene un formato válido. Formato esperado: ed2k://|file|nombre|tamaño|hash|/".to_string()
     })?;
-    let parsed = parse_ed2k_link(&normalized).unwrap();
+    let parsed = parse_normalized_ed2k_link(&normalized).ok_or_else(|| {
+        "No se pudo interpretar el enlace eD2k tras normalizarlo (nombre, tamaño o hash inválidos)".to_string()
+    })?;
 
     // Check if the file is ALREADY completed on disk in Incoming directory
     if let Some(existing_file) = resolve_download_file(&parsed.name, Some(&parsed.hash), None) {
@@ -234,13 +241,22 @@ pub async fn request_more_sources(state: State<'_, AppState>, hash: String) -> R
 // ═══════════════════════════════════════════════════════════════════
 
 pub fn url_decode(s: &str) -> String {
-    let mut result = Vec::new();
+    fn hex_val(b: u8) -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    }
+
     let bytes = s.as_bytes();
+    let mut result = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(b) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                result.push(b);
+            if let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
+                result.push(hi << 4 | lo);
                 i += 3;
                 continue;
             }
@@ -441,11 +457,11 @@ fn open_with_default_app(target: &Path) -> Result<(), String> {
 
     // 2. Direct spawn of PotPlayer 64-bit if installed
     let potplayer_path = Path::new(r"C:\Program Files\DAUM\PotPlayer\PotPlayerMini64.exe");
-    if potplayer_path.exists() {
-        if std::process::Command::new(potplayer_path).arg(target).spawn().is_ok() {
-            log::info!("PotPlayerMini64 spawned directly for {}", path_str);
-            return Ok(());
-        }
+    if potplayer_path.exists()
+        && std::process::Command::new(potplayer_path).arg(target).spawn().is_ok()
+    {
+        log::info!("PotPlayerMini64 spawned directly for {}", path_str);
+        return Ok(());
     }
 
     // 3. Fallback to cmd /C start "" "<path>"
@@ -596,5 +612,68 @@ ed2k://|file|Stuart.no.Consigue.Salvar.el.Universo.1x10.Spoiler..Grabado.con.pú
         assert_eq!(parsed.size, 1491350391);
         assert_eq!(parsed.hash, "C5B40A1B4A6EC5B6455B4C36B71573A1");
     }
-}
 
+    #[test]
+    fn test_url_decode_basic() {
+        assert_eq!(url_decode("%41%42"), "AB");
+        assert_eq!(url_decode("a%20b"), "a b");
+        assert_eq!(url_decode("%C3%A9"), "é");
+    }
+
+    #[test]
+    fn test_url_decode_non_hex_does_not_panic() {
+        // 'ñ' is two bytes in UTF-8: slicing the &str at i+1..i+3 would split it.
+        assert_eq!(url_decode("%Añ"), "%Añ");
+        assert_eq!(url_decode("%ñ1"), "%ñ1");
+        assert_eq!(url_decode("%zz"), "%zz");
+    }
+
+    #[test]
+    fn test_url_decode_trailing_and_incomplete() {
+        assert_eq!(url_decode("abc%"), "abc%");
+        assert_eq!(url_decode("%4"), "%4");
+        assert_eq!(url_decode("%"), "%");
+        assert_eq!(url_decode(""), "");
+        assert_eq!(url_decode("x%41"), "xA");
+    }
+
+    const HASH: &str = "0123456789ABCDEF0123456789ABCDEF";
+
+    #[test]
+    fn test_normalize_valid_link() {
+        let link = format!("ed2k://|file|nombre.ext|12345|{}|/", HASH);
+        assert_eq!(normalize_ed2k_link(&link), Some(link.clone()));
+    }
+
+    #[test]
+    fn test_normalize_url_encoded_name() {
+        let link = format!("ed2k://|file|mi%20archivo%C3%B1.ext|12345|{}|/", HASH);
+        assert_eq!(
+            normalize_ed2k_link(&link),
+            Some(format!("ed2k://|file|mi archivoñ.ext|12345|{}|/", HASH))
+        );
+    }
+
+    #[test]
+    fn test_normalize_double_encoded_pipe_in_name() {
+        // %257C decodes once to the literal text "%7C" and must stay in the name:
+        // it is not a field separator. Returns Some with the name "a%7Cb".
+        let link = format!("ed2k://|file|a%257Cb|12345|{}|/", HASH);
+        let expected = format!("ed2k://|file|a%7Cb|12345|{}|/", HASH);
+        assert_eq!(normalize_ed2k_link(&link), Some(expected.clone()));
+        // Parsing the normalized form must not decode a second time (that used to
+        // yield None and a panic in add_ed2k_link).
+        let parsed = parse_normalized_ed2k_link(&expected).expect("should parse");
+        assert_eq!(parsed.name, "a%7Cb");
+        assert_eq!(parsed.size, 12345);
+    }
+
+    #[test]
+    fn test_normalize_garbage_returns_none() {
+        assert_eq!(normalize_ed2k_link("hola mundo"), None);
+        assert_eq!(normalize_ed2k_link("http://example.com/%Añ"), None);
+        assert_eq!(normalize_ed2k_link(""), None);
+        assert_eq!(normalize_ed2k_link("ed2k://|file|x|notanumber|0123456789ABCDEF0123456789ABCDEF|/"), None);
+        assert_eq!(normalize_ed2k_link("ed2k://|file|x|1|SHORT|/"), None);
+    }
+}

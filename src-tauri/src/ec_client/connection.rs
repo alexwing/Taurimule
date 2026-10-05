@@ -140,7 +140,7 @@ impl EcConnection {
             return Err("Zero-length EC packet".to_string());
         }
 
-        if length > 10 * 1024 * 1024 {
+        if length > packet::MAX_PACKET_SIZE {
             return Err(format!("EC packet too large: {} bytes", length));
         }
 

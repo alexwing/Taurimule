@@ -1,6 +1,8 @@
 // TauriMule Context Menu Component — Inspired by Syncdrome's FileContextMenu.tsx
 // Features clamped window positioning, submenus, keyboard navigation, and automatic dismissal.
 
+import { escapeHtml } from "./html";
+
 export interface ContextMenuEntry {
   label: string;
   icon?: string;
@@ -67,8 +69,8 @@ export function showContextMenu(rawX: number, rawY: number, items: ContextMenuIt
       if (item.disabled) btn.disabled = true;
 
       btn.innerHTML = `
-        <span class="ctx-icon">${item.icon || ""}</span>
-        <span class="ctx-label">${item.label}</span>
+        <span class="ctx-icon">${escapeHtml(item.icon)}</span>
+        <span class="ctx-label">${escapeHtml(item.label)}</span>
         ${hasChildren ? '<span class="ctx-arrow" style="margin-left: auto; font-size: 10px; opacity: 0.7;">▶</span>' : ""}
       `;
 
@@ -102,8 +104,8 @@ export function showContextMenu(rawX: number, rawY: number, items: ContextMenuIt
             if (child.disabled) subBtn.disabled = true;
 
             subBtn.innerHTML = `
-              <span class="ctx-icon">${child.icon || ""}</span>
-              <span class="ctx-label">${child.label}</span>
+              <span class="ctx-icon">${escapeHtml(child.icon)}</span>
+              <span class="ctx-label">${escapeHtml(child.label)}</span>
             `;
 
             subBtn.addEventListener("click", (e) => {
